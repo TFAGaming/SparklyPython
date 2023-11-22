@@ -10,7 +10,7 @@ import json
 from threading import Thread
 import subprocess
 import ast
-import requests
+import webbrowser
 
 global file_path, edited, config
 file_path = ''
@@ -385,12 +385,6 @@ def install_libraries():
 
     pb.pack(side=TOP)
 
-    def does_package_exist(package_name: str):
-        pypi_url = f'https://pypi.org/project/{package_name}/'
-        response = requests.get(pypi_url)
-
-        return response.status_code == 200
-
     def install_library():
         package_name = toplvl_main_frame_library_entry_var.get()
 
@@ -404,17 +398,6 @@ def install_libraries():
             status_label.config(text=f'Installing... 0%')
 
             def main():
-                does_package_exist_res = does_package_exist(package_name)
-
-                if (not does_package_exist_res):
-                    messagebox(f'Invalid package name, \'{package_name}\' doesn\'t exist.', 'warn')
-
-                    try:
-                        install_btn.config(state='normal')
-                    except: pass
-
-                    return
-
                 global process
                 process = subprocess.Popen(['pip', 'install', package_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -519,7 +502,7 @@ def editor_goto():
             line_number = int(line_number_string)
 
             if line_number not in range(1, 32767):
-                messagebox('The integer is out of range [1, 32767].', 'warn')
+                messagebox('The integer is out of range: [1, 32767].', 'warn')
                 return
 
             editor.mark_set(INSERT, f"{line_number}.0")
@@ -658,14 +641,12 @@ class IDE:
 
     configure_menu = Menu(menu_bar, tearoff=0)
     configure_menu.add_command(label='Terminal', command=configure_terminal)
-    configure_menu.add_command(label='Appearance', command=None, state=DISABLED)
-    configure_menu.add_command(label='Syntax highlighting', command=None, state=DISABLED)
 
     menu_bar.add_cascade(label='Settings', menu=configure_menu)
 
     help_menu = Menu(menu_bar, tearoff=0)
-    help_menu.add_command(label='About', command=lambda: messagebox('SparklyPython\n\n- Version: 1.0\n- Developer: T.F.A\n- Language: Python\n- GUI: Tkinter  (Python)\n- Open-source? No\n\n© Copyright 2024, The MIT License', 'info'))
-    help_menu.add_command(label='Source (GitHub)', state='disabled', command=None)
+    help_menu.add_command(label='About', command=lambda: messagebox('SparklyPython\n\n- Version: 1.0\n- Developer: T.F.A\n- Language: Python\n- GUI: Tkinter  (Python)\n- Open-source? Yes\n\n© Copyright 2024, The MIT License', 'info'))
+    help_menu.add_command(label='Source (GitHub)', command=lambda: webbrowser.open('https://github.com/TFAGaming/SparklyPython'))
 
     menu_bar.add_cascade(label='Help', menu=help_menu)
 

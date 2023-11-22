@@ -1,1 +1,4 @@
 sparklypython-config.json
+build
+dist
+main.spec
