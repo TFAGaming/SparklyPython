@@ -16,11 +16,15 @@ global file_path, edited, config
 file_path = ''
 edited = False
 config = {
-    "python.default.command": "py",
-    "terminal.color": "F",
-    "recent.file.path": None,
-    "always.open.recent": True
-}
+        "default.python.command": "py",
+        "terminal.color.hex": "F",
+        "recent.file.path": None,
+        "pause.terminal.onend": True,
+        "newline.with.tabs": True,
+        "always.open.recent": True,
+        "save.on.run": True,
+        "auto.save": False
+}  
 
 def messagebox(content: str, type: str):
     if (type == 'info'):
@@ -59,6 +63,9 @@ def user_typed_event():
 
     set_edited(True)
 
+    if (config['auto.save'] == True):
+        save_file()
+
 def save_file():
     if (len(file_path) < 1):
         save_as_file()
@@ -79,7 +86,7 @@ def save_file():
         messagebox('Unable to perform this action properly.', 'error')
     
 def save_as_file():
-    path = asksaveasfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Save as')
+    path = asksaveasfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Save as', defaultextension='py')
 
     if (len(path) < 1):
         return
@@ -172,10 +179,10 @@ def run_project():
 
             return
 
-        save_file()
+        if (config["save.on.run"] == True): save_file()
 
         redirect = file_path.split('/')
-        string = ''
+        path = ''
 
         for i in range(len(redirect) - 1):
             split = redirect[i].split(' ')
@@ -188,15 +195,24 @@ def run_project():
                     else:
                         second += split[i] + ' '
 
-                string += '\"' + second + '\"' + '/'
+                path += '\"' + second + '\"' + '/'
             else: 
-                string += redirect[i] + '/'
+                path += redirect[i] + '/'
 
         file_name = f"\"{redirect[len(redirect) - 1].split('.')[0]}\""
-        command = config['python.default.command']
-        terminal_color = config['terminal.color']
+        command = config['default.python.command'] or 'py'
+        terminal_color = config['terminal.color.hex'] or 'F'
 
-        system(f'start cmd /k "cd {string} && title SparklyPython && color {terminal_color} && {command} {file_name}.py && (pause && exit) || (pause && exit)"')
+        cmd_str = f'start cmd /k "cd {path} && title SparklyPython && color {terminal_color} && {command} {file_name}'
+
+        if (redirect[len(redirect) - 1].endswith('.py')):
+            cmd_str += '.py'
+
+        if (config['pause.terminal.onend'] == True):
+            cmd_str += ' && (pause && exit) || (pause && exit)"'
+        else: cmd_str += ' && (exit) || (exit)"'
+
+        system(cmd_str)
 
         status_bar.config(text='Running: ' + file_path)
     except:
@@ -230,7 +246,6 @@ def change_syntax_highlighting(txt: Text):
         cdg.idprog = re.compile(r'\s+(\w+|\d+)', re.S)
 
         #cdg.tagdefs['Group'] = {'foreground': 'color', 'background': None}
-
         cdg.tagdefs['GroupForNumbers'] = {'foreground': '#ff6600', 'background': None}
         
         cdg.tagdefs['COMMENT'] = {'foreground': 'gray', 'background': None}
@@ -261,14 +276,22 @@ def show_editor_commands(event):
 def toggle_openrecent():
     value = openrecent_variable.get()
 
-    if (value == 1):
-        config['always.open.recent'] = True
-    else:
-        config['always.open.recent'] = False
+    config['always.open.recent'] = value
+
+    save_config(config)
+
+def toggle_autosave():
+    value = autosave_variable.get()
+
+    print(value)
+
+    config['auto.save'] = value
 
     save_config(config)
 
 def new_line():
+    if (config["newline.with.tabs"] == False): return
+
     cursor_pos = editor.index(INSERT)
     current_line = editor.get(cursor_pos.split('.')[0] + ".0", cursor_pos)
 
@@ -289,72 +312,6 @@ def new_line():
             editor.insert(INSERT, '\n')
 
     return 'break'
-
-def configure_terminal():
-    toplvl = Toplevel()
-
-    toplvl.title('Terminal configuration')
-    toplvl.geometry('300x100')
-    toplvl.resizable(0, 0)
-
-    try:
-        toplvl.iconbitmap('icon.ico')
-    except:
-        toplvl.iconbitmap(None)
-
-    # Python command
-    toplvl_main_frame_python_command = Frame(toplvl)
-    toplvl_main_frame_python_command.pack(side=TOP, fill=X, padx=5, pady=5)
-
-    toplvl_main_frame_python_label = Label(toplvl_main_frame_python_command, text='Default Python command:')
-    toplvl_main_frame_python_label.pack(side=LEFT, fill=X)
-
-    toplvl_main_frame_python_entry_var = StringVar()
-    toplvl_main_frame_python_entry_var.set(config['python.default.command'])
-
-    toplvl_main_frame_python_entry = Entry(toplvl_main_frame_python_command, textvariable=toplvl_main_frame_python_entry_var)
-    toplvl_main_frame_python_entry.pack(side=RIGHT, fill=X)
-
-    # Terminal color
-    colors_list = ['1 (Blue)', '2 (Green)', '3 (Gray-Blue)', '4 (Red)', '5 (Magenta)', '6 (Yellow)', '7 (White)', '8 (Gray)', '9 (Bright Blue)', 'A (Bright Green)', 'B (Cyan)', 'C (Bright Red)', 'D (Bright Magenta)', 'E (Bright Yelow)', 'F (Bright White)']
-    configured_color = config['terminal.color'] or 'F'
-
-    index = next((i for i, s in enumerate(colors_list) if s.split(' ')[0] == configured_color), None)
-
-    toplvl_main_frame_terminal_color = Frame(toplvl)
-    toplvl_main_frame_terminal_color.pack(side=TOP, fill=X, padx=5, pady=5)
-
-    toplvl_main_frame_terminal_label = Label(toplvl_main_frame_terminal_color, text='Terminal color:')
-    toplvl_main_frame_terminal_label.pack(side=LEFT, fill=X)
-
-    toplvl_main_frame_terminal_entry = ttk.Combobox(toplvl_main_frame_terminal_color, values=colors_list)
-    toplvl_main_frame_terminal_entry.pack(side=RIGHT, fill=X)
-
-    toplvl_main_frame_terminal_entry.current(index)
-
-    def save_toplvl():
-        if (toplvl_main_frame_terminal_entry.get()):
-            config['terminal.color'] = toplvl_main_frame_terminal_entry.get().split(' ')[0]
-        else:
-            config['terminal.color'] = 'F'
-
-        if (toplvl_main_frame_python_entry.get()):
-            config['python.default.command'] = toplvl_main_frame_python_entry.get()
-        else:
-            config['python.default.command'] = 'py'
-
-        save_config(config)
-        toplvl.destroy()
-        status_bar.config(text='Updated and saved configuration variables for Terminal.')
-
-    # Save and cancel
-    save_btn = Button(toplvl, text='Save & Quit', width=10, command=lambda: save_toplvl())
-    save_btn.pack(side=RIGHT, padx=5)
-
-    cancel_btn = Button(toplvl, text='Cancel', width=10, command=lambda: toplvl.destroy())
-    cancel_btn.pack(side=RIGHT, padx=5)
-
-    toplvl.mainloop()
 
 def install_libraries():
     toplvl = Toplevel()
@@ -395,6 +352,7 @@ def install_libraries():
         try:
             pb.step(1)
             install_btn.config(state='disabled')
+            toplvl_main_frame_library_entry.config(state='disabled')
             status_label.config(text=f'Installing... 0%')
 
             def main():
@@ -422,23 +380,22 @@ def install_libraries():
 
                             break
 
-                if (errReturn):
-                    return
-                
+                if (errReturn): return
+
                 pb.stop()
 
                 if process.returncode == 0:
+                    status_label.config(text=f'Installing... 100%')
+                    toplvl.destroy()
+
                     status_bar.config(text=f'Successfully installed \'{package_name}\' using pip packages manager.')
                     messagebox(f'Successfully installed \'{package_name}\'.', 'info')
-
-                    status_label.config(text=f'Installing... 100%')
                 else:
-                    messagebox(f'Something went wrong, please make sure that you are connected to the internet or have the pip packages manager installed.', 'err')
+                    messagebox(f'Something went wrong, please make sure that:\n- You are connected to the internet.\n- The package \'{package_name}\' exist.\n- pip packages manager installed.', 'err')
                     status_label.config(text=f'Installing... Error')
-
-                install_btn.config(state='normal')
-
-                toplvl.destroy()
+                    
+                    install_btn.config(state='normal')
+                    toplvl_main_frame_library_entry.config(state='normal')
 
             thread = Thread(target=main)
 
@@ -449,20 +406,23 @@ def install_libraries():
             toplvl.destroy()
             
     def close():
-        if (process.poll()):
-            messagebox('Killed the packages intaller processor.', 'info')
-            process.kill()
+        try:
+            if (process.poll()):
+                messagebox('Successfully killed the pip packages installer processor.', 'info')
+                process.kill()
 
-        toplvl.destroy()
+            toplvl.destroy()
+        except:
+            pass
     
     # Save and cancel
-    status_label = Label(toplvl, text='No queue')
+    status_label = Label(toplvl, text='No queue.')
     status_label.pack(side=LEFT, padx=5)
 
-    install_btn = Button(toplvl, text='Install', width=10, command=lambda: install_library())
+    install_btn = Button(toplvl, text='Install', width=10, command=install_library)
     install_btn.pack(side=RIGHT, padx=5)
 
-    cancel_btn = Button(toplvl, text='Cancel', width=10, command=lambda: close())
+    cancel_btn = Button(toplvl, text='Cancel', width=10, command=close)
     cancel_btn.pack(side=RIGHT, padx=5)
 
     toplvl.mainloop()
@@ -502,7 +462,7 @@ def editor_goto():
             line_number = int(line_number_string)
 
             if line_number not in range(1, 32767):
-                messagebox('The integer is out of range: [1, 32767].', 'warn')
+                messagebox('The integer is out of range: 1 <= x <= 32767', 'warn')
                 return
 
             editor.mark_set(INSERT, f"{line_number}.0")
@@ -555,7 +515,7 @@ def extract_variables_functions_classes():
     code = editor.get('1.0', END)
 
     parsed_code = ast.parse(code)
-
+    
     result = []
 
     for node in ast.walk(parsed_code):
@@ -571,6 +531,10 @@ def extract_variables_functions_classes():
             if isinstance(node.target, ast.Name):
                 result.append({"name": node.target.id, "type": get_readable_type(node.annotation), "id": hex(id(node.target)).upper().replace('X', 'x')})
 
+    if (len(result) <= 0):
+        messagebox('There are currently no variables in the code.', 'info')
+        return
+
     toplvl = Toplevel()
 
     toplvl.title('Variables')
@@ -584,6 +548,102 @@ def extract_variables_functions_classes():
     Table(toplvl, len(result), 3, [[var['name'], var['type'], var['id']] for var in result])
 
     toplvl.mainloop()
+
+class SettingsConfigWindow:
+    def __init__(self, settings):
+        self.settings = settings
+        self.result = []
+        self.root = Toplevel()
+        self.root.geometry('300x230')
+        self.root.resizable(0, 0)
+        self.root.title("Settings Configuration")
+
+        try:
+            self.root.iconbitmap('icon.ico')
+        except:
+            self.root.iconbitmap(None)
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        for label, widget_type, options, default_value, config_value in self.settings:
+            frame = Frame(self.root)
+            frame.pack(pady=5, padx=10, fill=X)
+
+            if widget_type == "Entry":
+                self.create_entry(frame, label, default_value, config_value)
+            elif widget_type == "Checkbutton":
+                self.create_checkbutton(frame, label, default_value, config_value)
+            elif widget_type == "Dropdown":
+                self.create_dropdown(frame, label, options, default_value, config_value)
+
+        btns_frame = Frame(self.root)
+        btns_frame.pack(side=BOTTOM, pady=10, padx=10)
+
+        save_button = Button(btns_frame, width=10, text="Save", command=self.save_settings)
+        save_button.pack(side=RIGHT, padx=5)
+
+        cancel_button = Button(btns_frame, width=10, text="Cancel", command=self.root.destroy)
+        cancel_button.pack(side=LEFT, padx=5)
+ 
+    def create_entry(self, frame, label, default_value, config_value):
+        Label(frame, text=label).pack(side=LEFT)
+        entry_var = StringVar(value=default_value)
+
+        if (default_value): entry_var.set(default_value)
+
+        entry = Entry(frame, textvariable=entry_var)
+        entry.pack(side=LEFT, padx=5)
+        self.result.append((entry_var, config_value))
+
+    def create_checkbutton(self, frame, label, default_value, config_value):
+        check_var = BooleanVar(value=default_value)
+
+        if (default_value): check_var.set(default_value)
+
+        checkbutton = Checkbutton(frame, text=label, variable=check_var)
+        checkbutton.pack(side=LEFT)
+        self.result.append((check_var, config_value))
+
+    def create_dropdown(self, frame, label, options, default_value, config_value):
+        Label(frame, text=label).pack(side=LEFT)
+        dropdown_var = StringVar()
+
+        if (default_value): dropdown_var.set(default_value)
+
+        dropdown = ttk.Combobox(frame, textvariable=dropdown_var, values=options, state='readonly')
+        dropdown.pack(side=LEFT, padx=5)
+        self.result.append((dropdown_var, config_value))
+
+    def save_settings(self):
+        for variable, config_value in self.result:
+            config[config_value] = variable.get()
+
+        save_config(config)
+        
+        self.root.destroy()
+
+        messagebox('Successfully saved the new settings.', 'info')
+
+def show_settings():
+    colors_list = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F']
+
+    settings = [
+        ("Default Python command", "Entry", None, config['default.python.command'] or 'py', 'default.python.command'),
+        ("Terminal prompt color", "Dropdown", colors_list, config['terminal.color.hex'] or 'F', 'terminal.color.hex'),
+        ("Pause Terminal on end", "Checkbutton", None, config['pause.terminal.onend'], 'pause.terminal.onend'),
+        ("Editor new line with TABs", "Checkbutton", None, config['newline.with.tabs'], 'newline.with.tabs'),
+        ("Save file on Run", "Checkbutton", None, config['save.on.run'], 'save.on.run')
+    ]
+
+    SettingsConfigWindow(settings)
+
+def scroll_both(action, position, type=None):
+    editor.yview_moveto(position)
+
+def update_scroll(first, last, type=None):
+    editor.yview_moveto(first)
+    scrollbar_yview.set(first, last)
 
 class IDE:
     global gui
@@ -600,10 +660,12 @@ class IDE:
     # Menu bar
     menu_bar = Menu(gui)
 
-    global openrecent_variable
-    openrecent_variable = IntVar()
+    global openrecent_variable, autosave_variable
+    openrecent_variable = BooleanVar()
+    autosave_variable = BooleanVar()
 
     openrecent_variable.set(config['always.open.recent'])
+    autosave_variable.set(config['auto.save'])
 
     file_menu = Menu(menu_bar, tearoff=0)
     file_menu.add_command(label='New', command=new_file, accelerator='Ctrl+N')
@@ -613,6 +675,7 @@ class IDE:
     file_menu.add_command(label='Save', command=save_file, accelerator='Ctrl+S')
     file_menu.add_command(label='Save as', command=save_as_file)
     file_menu.add_separator()
+    file_menu.add_checkbutton(label='Auto-save', command=toggle_autosave, variable=autosave_variable)
     file_menu.add_checkbutton(label='Open recent', command=toggle_openrecent, variable=openrecent_variable)
     file_menu.add_separator()
     file_menu.add_command(label='Exit', command=exit_project, accelerator='Alt+F4')
@@ -635,17 +698,13 @@ class IDE:
     python_menu.add_command(label='New prompt', command=open_command_prompt)
     python_menu.add_command(label='Run', command=run_project, accelerator='F5')
     python_menu.add_separator()
-    python_menu.add_command(label='Install packages', command=install_libraries)
+    python_menu.add_command(label='Install packages', command=install_libraries, accelerator='Ctrl+L')
+    python_menu.add_command(label='Settings', command=show_settings, accelerator='F8')
 
     menu_bar.add_cascade(label='Python', menu=python_menu)
 
-    configure_menu = Menu(menu_bar, tearoff=0)
-    configure_menu.add_command(label='Terminal', command=configure_terminal)
-
-    menu_bar.add_cascade(label='Settings', menu=configure_menu)
-
     help_menu = Menu(menu_bar, tearoff=0)
-    help_menu.add_command(label='About', command=lambda: messagebox('SparklyPython\n\n- Version: 1.0\n- Developer: T.F.A\n- Language: Python\n- GUI: Tkinter  (Python)\n- Open-source? Yes\n\n© Copyright 2024, The MIT License', 'info'))
+    help_menu.add_command(label='About', command=lambda: messagebox('SparklyPython\n\n- Version: 1.1.0\n- Developer: T.F.A\n- Supported Language(s): Python\n- Used Libraries: tkinter, idlelib, re, threading, subprocess, ast, webbrowser, json, os\n\n© Copyright 2024, The MIT License', 'info'))
     help_menu.add_command(label='Source (GitHub)', command=lambda: webbrowser.open('https://github.com/TFAGaming/SparklyPython'))
 
     menu_bar.add_cascade(label='Help', menu=help_menu)
@@ -657,6 +716,7 @@ class IDE:
     main_frame.pack(expand=True, fill=BOTH)
 
     # Scroll bar
+    global scrollbar_yview
     scrollbar_yview = Scrollbar(main_frame)
     scrollbar_yview.pack(side=RIGHT, fill=Y)
 
@@ -682,7 +742,8 @@ class IDE:
     editor_commands.add_command(label='Delete', command=lambda: editor.event_generate("<<Clear>>"), accelerator='Del')
 
     # Configuring scroll bar
-    editor.config(yscrollcommand=scrollbar_yview.set)
+    scrollbar_yview.config(command=scroll_both)
+    editor.config(yscrollcommand=update_scroll)
     
     # Seperator
     separator = ttk.Separator(gui, orient=HORIZONTAL)
@@ -713,8 +774,11 @@ class IDE:
     editor.bind('<Return>', lambda _: new_line())
 
     gui.bind('<Alt-F4>', lambda _: exit_project())
-    gui.protocol('WM_DELETE_WINDOW', exit_project)
+    gui.bind('<Control-Key-l>', lambda _: install_libraries())
+    gui.bind('<F8>', lambda _: show_settings())
     gui.bind('<F5>', lambda _: run_project())
+
+    gui.protocol('WM_DELETE_WINDOW', exit_project)
 
     # Open recent file
     recent_filepath = config['recent.file.path']
