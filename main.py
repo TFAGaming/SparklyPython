@@ -2,6 +2,10 @@ from tkinter import *
 from tkinter.filedialog import askopenfilename, asksaveasfilename
 from tkinter import messagebox as msgbox
 from tkinter import ttk
+from tklinenums import TkLineNumbers
+from tkhtmlview import HTMLLabel
+import requests
+from pkg_resources import working_set
 import idlelib.colorizer as ic
 import idlelib.percolator as ip
 import re
@@ -11,6 +15,7 @@ from threading import Thread
 import subprocess
 import ast
 import webbrowser
+import markdown
 
 global file_path, edited, config
 file_path = ''
@@ -24,7 +29,7 @@ config = {
         "always.open.recent": True,
         "save.on.run": True,
         "auto.save": False
-}  
+} 
 
 def messagebox(content: str, type: str):
     if (type == 'info'):
@@ -35,6 +40,74 @@ def messagebox(content: str, type: str):
         msgbox.showwarning('SparklyPython - Warning', content)
     else:
         pass
+
+class CustomTopLevel:
+    def __init__(self, title, geometry, settings, on_ok):
+        self.settings = settings
+        self.result = []
+        self.root = Toplevel()
+        self.root.geometry(geometry)
+        self.root.resizable(0, 0)
+        self.root.title(title)
+        self.on_ok = on_ok
+
+        try:
+            self.root.iconbitmap('icon.ico')
+        except:
+            self.root.iconbitmap(None)
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        for label, widget_type, options, default_value, config_value in self.settings:
+            frame = Frame(self.root)
+            frame.pack(pady=5, padx=10, fill=X)
+
+            if widget_type == "Entry":
+                self.create_entry(frame, label, default_value, config_value)
+            elif widget_type == "Checkbutton":
+                self.create_checkbutton(frame, label, default_value, config_value)
+            elif widget_type == "Dropdown":
+                self.create_dropdown(frame, label, options, default_value, config_value)
+
+        btns_frame = Frame(self.root)
+        btns_frame.pack(side=BOTTOM, pady=10, padx=10)
+
+        save_button = Button(btns_frame, width=10, text="OK", command=lambda: self.on_ok(self.result, self.root))
+        save_button.pack(side=RIGHT, padx=5)
+
+        cancel_button = Button(btns_frame, width=10, text="Cancel", command=self.root.destroy)
+        cancel_button.pack(side=LEFT, padx=5)
+ 
+    def create_entry(self, frame, label, default_value, config_value):
+        Label(frame, text=label).pack(side=LEFT)
+        entry_var = StringVar(value=default_value)
+
+        if (default_value): entry_var.set(default_value)
+
+        entry = Entry(frame, textvariable=entry_var)
+        entry.pack(side=RIGHT, padx=5)
+        self.result.append((entry_var, config_value))
+
+    def create_checkbutton(self, frame, label, default_value, config_value):
+        check_var = BooleanVar(value=default_value)
+
+        if (default_value): check_var.set(default_value)
+
+        checkbutton = Checkbutton(frame, text=label, variable=check_var)
+        checkbutton.pack(side=LEFT)
+        self.result.append((check_var, config_value))
+
+    def create_dropdown(self, frame, label, options, default_value, config_value):
+        Label(frame, text=label).pack(side=LEFT)
+        dropdown_var = StringVar()
+
+        if (default_value): dropdown_var.set(default_value)
+
+        dropdown = ttk.Combobox(frame, textvariable=dropdown_var, values=options, state='readonly')
+        dropdown.pack(side=RIGHT, padx=5)
+        self.result.append((dropdown_var, config_value))
+        
 
 def save_config(data):
     try:
@@ -59,7 +132,11 @@ except:
         exit()
 
 def user_typed_event():
+    editor.tag_remove('highlight', '1.0', END)
+
     change_syntax_highlighting(editor)
+
+    linenums.redraw()
 
     set_edited(True)
 
@@ -166,11 +243,11 @@ def exit_project():
         if (res):
             save_file()
 
-            gui.quit()
+            gui.destroy()
         else:
-            gui.quit()
+            gui.destroy()
     else:
-        gui.quit()
+        gui.destroy()
         
 def run_project():
     try:
@@ -247,7 +324,7 @@ def change_syntax_highlighting(txt: Text):
 
         #cdg.tagdefs['Group'] = {'foreground': 'color', 'background': None}
         cdg.tagdefs['GroupForNumbers'] = {'foreground': '#ff6600', 'background': None}
-        
+
         cdg.tagdefs['COMMENT'] = {'foreground': 'gray', 'background': None}
         cdg.tagdefs['KEYWORD'] = {'foreground': '#1220e6', 'background': None}
         cdg.tagdefs['BUILTIN'] = {'foreground': 'red', 'background': None}
@@ -283,8 +360,6 @@ def toggle_openrecent():
 def toggle_autosave():
     value = autosave_variable.get()
 
-    print(value)
-
     config['auto.save'] = value
 
     save_config(config)
@@ -317,7 +392,7 @@ def install_libraries():
     toplvl = Toplevel()
 
     toplvl.title('Install packages')
-    toplvl.geometry('300x90')
+    toplvl.geometry('400x150')
     toplvl.resizable(0, 0)
 
     try:
@@ -325,161 +400,115 @@ def install_libraries():
     except:
         toplvl.iconbitmap(None)
 
-    # Python command
-    toplvl_main_frame_python_command = Frame(toplvl)
-    toplvl_main_frame_python_command.pack(side=TOP, fill=X, padx=5, pady=5)
+    global last_searched_package_name
+    last_searched_package_name = None
 
-    toplvl_main_frame_library_label = Label(toplvl_main_frame_python_command, text='Library name:')
-    toplvl_main_frame_library_label.pack(side=LEFT, fill=X)
+    def main_search():
+        global last_searched_package_name
 
-    toplvl_main_frame_library_entry_var = StringVar()
+        package_name = package_name_entry_var.get()
 
-    toplvl_main_frame_library_entry = Entry(toplvl_main_frame_python_command, textvariable=toplvl_main_frame_library_entry_var)
-    toplvl_main_frame_library_entry.pack(side=RIGHT, fill=X)
+        if not package_name:
+            messagebox('You must provide a package name to search and to install.', 'warn')
+            return
 
-    # Progress bar
-    pb = ttk.Progressbar(toplvl, orient='horizontal', mode='determinate', length=280)
+        try:
+            response = requests.get(f'https://pypi.org/pypi/{package_name}/json')
+            response.raise_for_status()
+            package_info = response.json()
 
-    pb.pack(side=TOP)
+            package_releases = list(package_info.get('releases', {}))
+            package_releases_reversed = package_releases[::-1]
 
-    def install_library():
-        package_name = toplvl_main_frame_library_entry_var.get()
+            last_searched_package_name = package_name
 
-        if (len(package_name) <= 0):
-            messagebox('You need to provide a package name.', 'warn')
+            package_version_entry_var.set(package_releases_reversed[0])
+            package_version_entry.config(values=package_releases_reversed, state='readonly')
+            install_btn.config(state=NORMAL)
+        except:
+            messagebox(f'Failed to search the package \'{package_name}\'.', 'err')
             return
         
+    def main_install():
+        package_name = last_searched_package_name
+        package_version = package_version_entry_var.get()
+
+        cmd_package_name = f"{package_name}=={package_version}"
+
         try:
-            pb.step(1)
-            install_btn.config(state='disabled')
-            toplvl_main_frame_library_entry.config(state='disabled')
-            status_label.config(text=f'Installing... 0%')
+            subprocess.run(['pip', 'install', cmd_package_name], check=True)
 
-            def main():
-                global process
-                process = subprocess.Popen(['pip', 'install', package_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            messagebox(f'The package \'{package_name}\' has been installed successfully.', 'info')
+        except subprocess.CalledProcessError as e:
+            messagebox(f'Failed to install package \'{package_name}\'. Error: {e}', 'err')
 
-                i = 0
-                errReturn = False
+    main_frame = Frame(toplvl)
+    main_frame.pack(side=TOP, fill=X, padx=5, pady=5)
 
-                while process.poll() is None:
-                    output = process.stdout.readline()
-                    if output:
-                        try:
-                            pb.step(10)
-                            i += 10
+    Label(main_frame, text='Package name').pack(side=LEFT, fill=X)
 
-                            status_label.config(text=f'Installing... {i}%')
+    global package_name_entry_var, install_btn, package_version_entry, package_version_entry_var
+    package_name_entry_var = StringVar()
 
-                            gui.update_idletasks()
-                        except:
-                            messagebox('An error has occured with pip packages manager, this only happens when you try to end the process by closing the top level without letting the download to finish.', 'err')
-                            
-                            process.kill()
-                            errReturn = True
+    package_name_entry = Entry(main_frame, width=30, textvariable=package_name_entry_var)
+    package_name_entry.pack(side=RIGHT, fill=X)
 
-                            break
+    second_main_frame = Frame(toplvl)
+    second_main_frame.pack(side=TOP, fill=X, padx=5, pady=5)
 
-                if (errReturn): return
+    Label(second_main_frame, text='Select version').pack(side=LEFT, fill=X)
 
-                pb.stop()
+    install_btn = Button(second_main_frame, text='Install', state=DISABLED, width=10, command=main_install)
+    install_btn.pack(side=RIGHT, padx=5, pady=5)
 
-                if process.returncode == 0:
-                    status_label.config(text=f'Installing... 100%')
-                    toplvl.destroy()
+    package_version_entry_var = StringVar()
 
-                    status_bar.config(text=f'Successfully installed \'{package_name}\' using pip packages manager.')
-                    messagebox(f'Successfully installed \'{package_name}\'.', 'info')
-                else:
-                    messagebox(f'Something went wrong, please make sure that:\n- You are connected to the internet.\n- The package \'{package_name}\' exist.\n- pip packages manager installed.', 'err')
-                    status_label.config(text=f'Installing... Error')
-                    
-                    install_btn.config(state='normal')
-                    toplvl_main_frame_library_entry.config(state='normal')
+    package_version_entry = ttk.Combobox(second_main_frame, state=DISABLED, values=[], textvariable=package_version_entry_var)
+    package_version_entry.pack(side=RIGHT, padx=5, pady=5)
 
-            thread = Thread(target=main)
+    buttons_frame = Frame(toplvl)
+    buttons_frame.pack(side=BOTTOM)
 
-            thread.start()
-        except:
-            messagebox('Failed to start libraries installer.', 'err')
+    search_btn = Button(buttons_frame, text='Search', width=10, command=main_search)
+    search_btn.pack(side=RIGHT, padx=5, pady=5)
 
-            toplvl.destroy()
-            
-    def close():
-        try:
-            if (process.poll()):
-                messagebox('Successfully killed the pip packages installer processor.', 'info')
-                process.kill()
+    cancel_btn = Button(buttons_frame, text='Cancel', width=10, command=toplvl.destroy)
+    cancel_btn.pack(side=LEFT, padx=5, pady=5)
 
-            toplvl.destroy()
-        except:
-            pass
-    
-    # Save and cancel
-    status_label = Label(toplvl, text='No queue.')
-    status_label.pack(side=LEFT, padx=5)
+    installed_packages = list({ f'{package.project_name.lower()} ({package.version})' for package in working_set })
 
-    install_btn = Button(toplvl, text='Install', width=10, command=install_library)
-    install_btn.pack(side=RIGHT, padx=5)
-
-    cancel_btn = Button(toplvl, text='Cancel', width=10, command=close)
-    cancel_btn.pack(side=RIGHT, padx=5)
+    Button(buttons_frame, text='View installed', width=15, command=lambda: messagebox('You can use \'pip list\' instead.\n\n' + '\n'.join(installed_packages), 'info')).pack(side=LEFT)
 
     toplvl.mainloop()
 
-def editor_goto():
-    toplvl = Toplevel()
+def editor_search():
+    settings = [
+        ("Keyword to search", "Entry", None, "", None),
+        ("No case", "Checkbutton", None, False, None)
+    ]
 
-    toplvl.title('Go to')
-    toplvl.geometry('300x70')
-    toplvl.resizable(0, 0)
+    def main(results, root):
+        arr = []
 
-    try:
-        toplvl.iconbitmap('icon.ico')
-    except:
-        toplvl.iconbitmap(None)
+        for result in results:
+            arr.append(result[0].get())
 
-    # Line
-    toplvl_main_frame_goto= Frame(toplvl)
-    toplvl_main_frame_goto.pack(side=TOP, fill=X, padx=5, pady=5)
+        editor.tag_delete("highlight")
 
-    toplvl_main_frame_line_label = Label(toplvl_main_frame_goto, text='Line number:')
-    toplvl_main_frame_line_label.pack(side=LEFT, fill=X)
+        editor.tag_configure('highlight', foreground=None, background='#00FFFF')
 
-    toplvl_main_frame_line_spinbox_var = StringVar()
-        
-    toplvl_main_frame_line_spinbox = Spinbox(toplvl_main_frame_goto, from_=1, to=32767, increment=1, validate='key', textvariable=toplvl_main_frame_line_spinbox_var)
-    toplvl_main_frame_line_spinbox.pack(side=RIGHT, fill=X)
+        start_pos = '1.0'
+        while True:
+            start_pos = editor.search(arr[0], start_pos, stopindex=END, nocase=arr[1])
 
-    def main_goto():
-        try:
-            line_number_string = toplvl_main_frame_line_spinbox_var.get()
+            if not start_pos:
+                break
 
-            if not line_number_string.isdigit():
-                messagebox('The input must be an integer, without characters.', 'warn')
-                return
+            end_pos = f"{start_pos}+{len(arr[0])}c"
+            editor.tag_add('highlight', start_pos, end_pos)
+            start_pos = end_pos
 
-            line_number = int(line_number_string)
-
-            if line_number not in range(1, 32767):
-                messagebox('The integer is out of range: 1 <= x <= 32767', 'warn')
-                return
-
-            editor.mark_set(INSERT, f"{line_number}.0")
-            editor.see(INSERT)
-
-            toplvl.destroy()
-        except:
-            messagebox('Something went wrong, try again later.', 'err')
-
-    # Save and cancel
-    goto_btn = Button(toplvl, text='Go to', width=10, command=lambda: main_goto())
-    goto_btn.pack(side=RIGHT, padx=5)
-
-    cancel_btn = Button(toplvl, text='Cancel', width=10, command=lambda: toplvl.destroy())
-    cancel_btn.pack(side=RIGHT, padx=5)
-
-    toplvl.mainloop()
+    CustomTopLevel(title='Search keyword', geometry='300x120', settings=settings, on_ok=main)
 
 def formatter():
     text = editor.get("1.0", END)
@@ -549,101 +578,84 @@ def extract_variables_functions_classes():
 
     toplvl.mainloop()
 
-class SettingsConfigWindow:
-    def __init__(self, settings):
-        self.settings = settings
-        self.result = []
-        self.root = Toplevel()
-        self.root.geometry('300x230')
-        self.root.resizable(0, 0)
-        self.root.title("Settings Configuration")
-
-        try:
-            self.root.iconbitmap('icon.ico')
-        except:
-            self.root.iconbitmap(None)
-
-        self.create_widgets()
-
-    def create_widgets(self):
-        for label, widget_type, options, default_value, config_value in self.settings:
-            frame = Frame(self.root)
-            frame.pack(pady=5, padx=10, fill=X)
-
-            if widget_type == "Entry":
-                self.create_entry(frame, label, default_value, config_value)
-            elif widget_type == "Checkbutton":
-                self.create_checkbutton(frame, label, default_value, config_value)
-            elif widget_type == "Dropdown":
-                self.create_dropdown(frame, label, options, default_value, config_value)
-
-        btns_frame = Frame(self.root)
-        btns_frame.pack(side=BOTTOM, pady=10, padx=10)
-
-        save_button = Button(btns_frame, width=10, text="Save", command=self.save_settings)
-        save_button.pack(side=RIGHT, padx=5)
-
-        cancel_button = Button(btns_frame, width=10, text="Cancel", command=self.root.destroy)
-        cancel_button.pack(side=LEFT, padx=5)
- 
-    def create_entry(self, frame, label, default_value, config_value):
-        Label(frame, text=label).pack(side=LEFT)
-        entry_var = StringVar(value=default_value)
-
-        if (default_value): entry_var.set(default_value)
-
-        entry = Entry(frame, textvariable=entry_var)
-        entry.pack(side=LEFT, padx=5)
-        self.result.append((entry_var, config_value))
-
-    def create_checkbutton(self, frame, label, default_value, config_value):
-        check_var = BooleanVar(value=default_value)
-
-        if (default_value): check_var.set(default_value)
-
-        checkbutton = Checkbutton(frame, text=label, variable=check_var)
-        checkbutton.pack(side=LEFT)
-        self.result.append((check_var, config_value))
-
-    def create_dropdown(self, frame, label, options, default_value, config_value):
-        Label(frame, text=label).pack(side=LEFT)
-        dropdown_var = StringVar()
-
-        if (default_value): dropdown_var.set(default_value)
-
-        dropdown = ttk.Combobox(frame, textvariable=dropdown_var, values=options, state='readonly')
-        dropdown.pack(side=LEFT, padx=5)
-        self.result.append((dropdown_var, config_value))
-
-    def save_settings(self):
-        for variable, config_value in self.result:
-            config[config_value] = variable.get()
-
-        save_config(config)
-        
-        self.root.destroy()
-
-        messagebox('Successfully saved the new settings.', 'info')
-
 def show_settings():
     colors_list = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F']
 
     settings = [
         ("Default Python command", "Entry", None, config['default.python.command'] or 'py', 'default.python.command'),
         ("Terminal prompt color", "Dropdown", colors_list, config['terminal.color.hex'] or 'F', 'terminal.color.hex'),
-        ("Pause Terminal on end", "Checkbutton", None, config['pause.terminal.onend'], 'pause.terminal.onend'),
-        ("Editor new line with TABs", "Checkbutton", None, config['newline.with.tabs'], 'newline.with.tabs'),
-        ("Save file on Run", "Checkbutton", None, config['save.on.run'], 'save.on.run')
+        ("Terminal: Pause Terminal on end", "Checkbutton", None, config['pause.terminal.onend'], 'pause.terminal.onend'),
+        ("Editor: Add TABs on a new line", "Checkbutton", None, config['newline.with.tabs'], 'newline.with.tabs'),
+        ("Editor: Save file on Run", "Checkbutton", None, config['save.on.run'], 'save.on.run')
     ]
 
-    SettingsConfigWindow(settings)
+    def main(results, root):
+        for variable, config_value in results:
+            config[config_value] = variable.get()
 
-def scroll_both(action, position, type=None):
+        save_config(config)
+
+        root.destroy()
+
+        messagebox('Successfully saved the new settings.', 'info')
+
+    CustomTopLevel(title='Settings configuration', geometry='300x230', settings=settings, on_ok=main)
+
+def scroll_both_y(action, position, type=None):
     editor.yview_moveto(position)
 
-def update_scroll(first, last, type=None):
+def scroll_both_x(action, position, type=None):
+    editor.xview_moveto(position)
+
+def update_scroll_y(first, last, type=None):
     editor.yview_moveto(first)
     scrollbar_yview.set(first, last)
+    linenums.redraw()
+
+def update_scroll_x(first, last, type=None):
+    editor.xview_moveto(first)
+    scrollbar_xview.set(first, last)
+    linenums.redraw()
+
+def show_about():
+    toplvl = Toplevel()
+
+    toplvl.title('SparklyPython - About')
+    toplvl.geometry('800x500')
+    toplvl.resizable(0, 0)
+
+    try:
+        toplvl.iconbitmap('icon.ico')
+    except:
+        toplvl.iconbitmap(None)
+
+    main_frame = Frame(toplvl)
+    main_frame.pack(side=TOP)
+
+    def display_markdown():
+        try:
+            with open('ABOUT.md', 'r', encoding='utf-8') as file:
+                markdown_content = file.read()
+
+                html_content = markdown.markdown(markdown_content)
+
+                html_label.set_html(html_content)
+        except:
+            messagebox('Failed to display the markdown file.', 'err')
+
+            toplvl.destroy()
+
+    global html_label
+    html_label = HTMLLabel(main_frame, html="")
+    html_label.pack(padx=10, pady=10, side=LEFT, expand=True, fill=BOTH)
+
+    display_markdown()
+
+    second_main_frame = Frame(toplvl)
+    second_main_frame.pack(side=BOTTOM)
+
+    ok_button = Button(second_main_frame, width=10, text='OK', command=toplvl.destroy)
+    ok_button.pack(side=BOTTOM, padx=5, pady=5)
 
 class IDE:
     global gui
@@ -686,7 +698,8 @@ class IDE:
     edit_menu.add_command(label='Undo', command=lambda: editor_undo(), accelerator='Ctrl+Z')
     edit_menu.add_command(label='Redo', command=lambda: editor_redo(), accelerator='Ctrl+Y')
     edit_menu.add_separator()
-    edit_menu.add_command(label='Go to', command=lambda: editor_goto(), accelerator='Ctrl+F')
+    edit_menu.add_command(label='Search keyword', command=lambda: editor_search(), accelerator='Ctrl+F')
+    edit_menu.add_command(label='Format code', command=lambda: formatter())
     edit_menu.add_separator()
     edit_menu.add_command(label='Copy', command=lambda: editor.event_generate("<<Copy>>"), accelerator='Ctrl+C')
     edit_menu.add_command(label='Cut', command=lambda: editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
@@ -704,7 +717,7 @@ class IDE:
     menu_bar.add_cascade(label='Python', menu=python_menu)
 
     help_menu = Menu(menu_bar, tearoff=0)
-    help_menu.add_command(label='About', command=lambda: messagebox('SparklyPython\n\n- Version: 1.1.0\n- Developer: T.F.A\n- Supported Language(s): Python\n- Used Libraries: tkinter, idlelib, re, threading, subprocess, ast, webbrowser, json, os\n\n© Copyright 2024, The MIT License', 'info'))
+    help_menu.add_command(label='About', command=lambda: show_about())
     help_menu.add_command(label='Source (GitHub)', command=lambda: webbrowser.open('https://github.com/TFAGaming/SparklyPython'))
 
     menu_bar.add_cascade(label='Help', menu=help_menu)
@@ -716,14 +729,20 @@ class IDE:
     main_frame.pack(expand=True, fill=BOTH)
 
     # Scroll bar
-    global scrollbar_yview
-    scrollbar_yview = Scrollbar(main_frame)
+    global scrollbar_yview, scrollbar_xview
+    scrollbar_yview = Scrollbar(main_frame, orient=VERTICAL)
     scrollbar_yview.pack(side=RIGHT, fill=Y)
 
-    # Editor
-    global editor
-    editor = Text(main_frame, undo=True, yscrollcommand=scrollbar_yview.set)
-    editor.pack(padx=5, pady=5, fill=BOTH, expand=True)
+    scrollbar_xview = Scrollbar(main_frame, orient=HORIZONTAL)
+    scrollbar_xview.pack(side=BOTTOM, fill=X)
+
+    # Editor and line numbers
+    global editor, linenums
+    editor = Text(main_frame, undo=True, yscrollcommand=scrollbar_yview.set, xscrollcommand=scrollbar_xview.set, wrap=NONE)
+    editor.pack(padx=5, pady=5, fill=BOTH, side=RIGHT, expand=True)
+
+    linenums = TkLineNumbers(main_frame, editor, justify=RIGHT)
+    linenums.pack(fill=Y, side=LEFT, padx=5, pady=5)
 
     global editor_commands
     editor_commands = Menu(gui, tearoff=0)
@@ -734,6 +753,7 @@ class IDE:
     editor_commands.add_command(label='Cut', command=lambda: editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
     editor_commands.add_command(label='Paste', command=lambda: editor.event_generate("<<Paste>>"), accelerator='Ctrl+V')
     editor_commands.add_separator()
+    editor_commands.add_command(label='Search keyword', command=lambda: editor_search(), accelerator='CTRL+F')
     editor_commands.add_command(label='Run', command=lambda: run_project(), accelerator='F5')
     editor_commands.add_command(label='Format code', command=lambda: formatter())
     editor_commands.add_command(label='Variables', command=lambda: extract_variables_functions_classes())
@@ -742,8 +762,9 @@ class IDE:
     editor_commands.add_command(label='Delete', command=lambda: editor.event_generate("<<Clear>>"), accelerator='Del')
 
     # Configuring scroll bar
-    scrollbar_yview.config(command=scroll_both)
-    editor.config(yscrollcommand=update_scroll)
+    scrollbar_yview.config(command=scroll_both_y)
+    scrollbar_xview.config(command=scroll_both_x)
+    editor.config(yscrollcommand=update_scroll_y, xscrollcommand=update_scroll_x)
     
     # Seperator
     separator = ttk.Separator(gui, orient=HORIZONTAL)
@@ -765,12 +786,16 @@ class IDE:
     status_bar.pack(fill=X, side=LEFT, ipady=3, padx=10)
 
     # Bindings
-    editor.bind("<Key>", lambda _: user_typed_event())
+    def return_key(event):
+        if event.keysym == 'Return':
+            editor.after(1, lambda: editor.see(END))
+
+    editor.bind('<Key>', lambda _: user_typed_event())
     editor.bind('<Button-3>', show_editor_commands)
     editor.bind('<Control-Key-s>', lambda _: save_file())
     editor.bind('<Control-Key-o>', lambda _: open_file())
     editor.bind('<Control-Key-n>', lambda _: new_file())
-    editor.bind('<Control-Key-f>', lambda _: editor_goto())
+    editor.bind('<Control-Key-f>', lambda _: editor_search())
     editor.bind('<Return>', lambda _: new_line())
 
     gui.bind('<Alt-F4>', lambda _: exit_project())
