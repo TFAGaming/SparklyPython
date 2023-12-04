@@ -1,5 +1,5 @@
 from tkinter import *
-from tkinter.filedialog import askopenfilename, asksaveasfilename
+from tkinter.filedialog import askopenfilename, asksaveasfilename, askdirectory
 from tkinter import messagebox as msgbox
 from tkinter import ttk
 from tklinenums import TkLineNumbers
@@ -9,17 +9,19 @@ from pkg_resources import working_set
 import idlelib.colorizer as ic
 import idlelib.percolator as ip
 import re
-from os import system
+import os
 import json
 from threading import Thread
 import subprocess
 import ast
 import webbrowser
 import markdown
+import winotify
 
-global file_path, edited, config
+global file_path, edited, main_dir, config, sparklypython_version
 file_path = ''
 edited = False
+main_dir = ''
 config = {
         "default.python.command": "py",
         "terminal.color.hex": "F",
@@ -28,8 +30,12 @@ config = {
         "newline.with.tabs": True,
         "always.open.recent": True,
         "save.on.run": True,
-        "auto.save": False
-} 
+        "auto.save": False,
+        "show.filesexplorer": True,
+        "show.linenumbers": True,
+        "update.check": True
+}
+sparklypython_version = 'v1.3.0'
 
 def messagebox(content: str, type: str):
     if (type == 'info'):
@@ -39,6 +45,48 @@ def messagebox(content: str, type: str):
     elif (type == 'warn'):
         msgbox.showwarning('SparklyPython - Warning', content)
     else:
+        pass
+    
+def show_notification(title: str, message: str, actions=None):
+    noti = winotify.Notification(
+        app_id='SparklyPython App',
+        title=title,
+        msg=message,
+        icon='',
+        duration='short'
+    )
+
+    for i in actions:
+        print(i)
+
+        noti.add_actions(i[0], i[1])
+
+    noti.show()
+    
+def check_latest_release_from_github():
+    try:
+        def main():
+            try:
+                response = requests.get('https://api.github.com/repos/TFAGaming/SparklyPython/releases')
+                response.raise_for_status()
+                github_info = response.json()
+
+                if (len(github_info) > 0):
+                    latest = github_info[0]['tag_name']
+
+                    if (latest != sparklypython_version):
+                        show_notification(
+                            title='New Update - ' + latest,
+                            message=f'You are currently using the version {sparklypython_version}, while the latest version is {latest}. Click on the button below to install from GitHub!',
+                            actions=[
+                                (f'Install {latest}', 'https://github.com/TFAGaming/SparklyPython/releases/tag/' + latest)
+                            ])
+            except:
+                pass
+
+        thread = Thread(target=main)
+        thread.start()
+    except:
         pass
 
 class CustomTopLevel:
@@ -205,16 +253,23 @@ def new_file():
 
     set_edited(False)
     
-def open_file():
+def open_file(another_path=None, allow_update_files_explorer=True):
     try:
         if (edited):
             res = msgbox.askyesno('SparklyPython - New File', 'Do you want to save the file before opening another one?')
 
             if (res): save_file()
 
-        path = askopenfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Open file')
+        path = ''
+        
+        if (another_path):
+            path = another_path
+        else:
+            path = askopenfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Open file')
 
         if (len(path) <= 0): return
+
+        if (allow_update_files_explorer): files_explorer_update(os.path.dirname(path))
 
         with open(path, 'r') as file:
             if (file.readable() == False):
@@ -230,6 +285,8 @@ def open_file():
             set_file_path(path)
             set_edited(False)
 
+            linenums.redraw()
+
             status_bar.config(text='Opened: ' + path)
 
             change_syntax_highlighting(editor)
@@ -242,12 +299,8 @@ def exit_project():
 
         if (res):
             save_file()
-
-            gui.destroy()
-        else:
-            gui.destroy()
-    else:
-        gui.destroy()
+    
+    gui.destroy()
         
 def run_project():
     try:
@@ -289,7 +342,7 @@ def run_project():
             cmd_str += ' && (pause && exit) || (pause && exit)"'
         else: cmd_str += ' && (exit) || (exit)"'
 
-        system(cmd_str)
+        os.system(cmd_str)
 
         status_bar.config(text='Running: ' + file_path)
     except:
@@ -297,7 +350,7 @@ def run_project():
 
 def open_command_prompt():
     try:
-        system(f'start cmd /c "title SparklyPython && py && (pause && exit) || (pause && exit)"')
+        os.system(f'start cmd /c "title SparklyPython && py && (pause && exit) || (pause && exit)"')
     except:
         messagebox('Failed to start a new Python prompt.', 'err')
     
@@ -365,6 +418,8 @@ def toggle_autosave():
     save_config(config)
 
 def new_line():
+    linenums.redraw()
+
     if (config["newline.with.tabs"] == False): return
 
     cursor_pos = editor.index(INSERT)
@@ -392,7 +447,7 @@ def install_libraries():
     toplvl = Toplevel()
 
     toplvl.title('Install packages')
-    toplvl.geometry('400x150')
+    toplvl.geometry('400x120')
     toplvl.resizable(0, 0)
 
     try:
@@ -436,7 +491,7 @@ def install_libraries():
         cmd_package_name = f"{package_name}=={package_version}"
 
         try:
-            subprocess.run(['pip', 'install', cmd_package_name], check=True)
+            subprocess.run(['pip', 'install', cmd_package_name], check=True, shell=True, startupinfo=subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW))
 
             messagebox(f'The package \'{package_name}\' has been installed successfully.', 'info')
         except subprocess.CalledProcessError as e:
@@ -586,7 +641,8 @@ def show_settings():
         ("Terminal prompt color", "Dropdown", colors_list, config['terminal.color.hex'] or 'F', 'terminal.color.hex'),
         ("Terminal: Pause Terminal on end", "Checkbutton", None, config['pause.terminal.onend'], 'pause.terminal.onend'),
         ("Editor: Add TABs on a new line", "Checkbutton", None, config['newline.with.tabs'], 'newline.with.tabs'),
-        ("Editor: Save file on Run", "Checkbutton", None, config['save.on.run'], 'save.on.run')
+        ("Editor: Save file on Run", "Checkbutton", None, config['save.on.run'], 'save.on.run'),
+        ("Updater: Check latest version on startup", "Checkbutton", None, config['update.check'], 'update.check')
     ]
 
     def main(results, root):
@@ -599,7 +655,7 @@ def show_settings():
 
         messagebox('Successfully saved the new settings.', 'info')
 
-    CustomTopLevel(title='Settings configuration', geometry='300x230', settings=settings, on_ok=main)
+    CustomTopLevel(title='Settings configuration', geometry='300x260', settings=settings, on_ok=main)
 
 def scroll_both_y(action, position, type=None):
     editor.yview_moveto(position)
@@ -616,6 +672,18 @@ def update_scroll_x(first, last, type=None):
     editor.xview_moveto(first)
     scrollbar_xview.set(first, last)
     linenums.redraw()
+
+def toggle_line_numbers_view():
+    value = line_numbers_view_var.get()
+
+    if (value):
+        linenums.pack(fill=Y, side=RIGHT, padx=5, pady=5)
+    else:
+        linenums.pack_forget()
+
+    config["show.linenumbers"] = value
+
+    save_config(config)
 
 def show_about():
     toplvl = Toplevel()
@@ -657,6 +725,108 @@ def show_about():
     ok_button = Button(second_main_frame, width=10, text='OK', command=toplvl.destroy)
     ok_button.pack(side=BOTTOM, padx=5, pady=5)
 
+def populate_files_explorer(tree: ttk.Treeview, parent, folder, path_so_far="", show_warning=True):
+    if (len(folder) <= 0): return
+ 
+    items = os.listdir(folder)
+
+    if (show_warning and len(items) > 20):
+        res = msgbox.askyesno('The selected directory has too many files to load, this might take some time.', 'warn', options=['-type=1'])
+
+    for item in items:
+        item_path = os.path.join(folder, item)
+        full_path = os.path.join(path_so_far, item)
+
+        if os.path.isdir(item_path):
+            folder_icon = tree.insert(parent, 'end', text=f' {item}', open=False, image=img_folder, values=(full_path, 'dir'))
+
+            populate_files_explorer(tree, folder_icon, item_path, path_so_far=full_path, show_warning=False)
+        else:
+            if (str(item).endswith('.py')): 
+                tree.insert(parent, 'end', text=f' {item}', image=img_python_file, values=(full_path, 'file'))
+            elif (str(item).endswith('.md')): 
+                tree.insert(parent, 'end', text=f' {item}', image=img_markdown_file, values=(full_path, 'file'))
+            else:
+                tree.insert(parent, 'end', text=f' {item}', image=img_unknown_file, values=(full_path, 'file'))
+
+def files_explorer_on_select(event):
+    selected_item = files_explorer_tree.selection()
+
+    if (not selected_item): return
+
+    full_path: str = os.path.join(main_dir, files_explorer_tree.item(selected_item, 'values')[0]).replace('\\', '/')
+    typeof = files_explorer_tree.item(selected_item, 'values')[1]
+
+    if (typeof == 'file'):
+        if (full_path.endswith('.py')):
+            open_file(full_path, False)
+        elif (full_path.endswith('.md')):
+            try:
+                toplvl = Toplevel()
+
+                toplvl.title('Markdown - ' + full_path)
+                toplvl.geometry('800x500')
+
+                try:
+                    toplvl.iconbitmap('icon.ico')
+                except:
+                    toplvl.iconbitmap(None)
+
+                main_frame = Frame(toplvl)
+                main_frame.pack(side=TOP)
+
+                html_label = HTMLLabel(main_frame, html="")
+                html_label.pack(padx=10, pady=10, side=LEFT, expand=True, fill=BOTH)
+
+                second_main_frame = Frame(toplvl)
+                second_main_frame.pack(side=BOTTOM)
+
+                ok_button = Button(second_main_frame, width=10, text='OK', command=toplvl.destroy)
+                ok_button.pack(side=BOTTOM, padx=5, pady=5)
+
+                with open(full_path, 'r', encoding='utf-8') as file:
+                    markdown_content = file.read()
+
+                    html_content = markdown.markdown(markdown_content)
+
+                    html_label.set_html(html_content)
+            except:
+                messagebox('Failed to display the markdown file.', 'err')
+
+def toggle_files_explorer_view():
+    value = files_explorer_view_var.get()
+
+    if (value):
+        files_explorer_frame.pack(side=LEFT, fill=BOTH, padx=5, pady=5)
+    else:
+        files_explorer_frame.pack_forget()
+
+    config["show.filesexplorer"] = value
+
+    save_config(config)
+
+def files_explorer_button_open_dir():
+    path = askdirectory(title='SparklyPython - Open directory')
+
+    if (path or len(path) > 0):
+        global main_dir
+        main_dir = path
+
+        for i in files_explorer_tree.get_children():
+            files_explorer_tree.delete(i)
+
+        populate_files_explorer(files_explorer_tree, '', main_dir)
+
+def files_explorer_update(path=None):
+    if (path):
+        global main_dir
+        main_dir = path
+
+    for i in files_explorer_tree.get_children():
+        files_explorer_tree.delete(i)
+
+    populate_files_explorer(files_explorer_tree, '', main_dir)
+
 class IDE:
     global gui
     gui = Tk()
@@ -672,23 +842,42 @@ class IDE:
     # Menu bar
     menu_bar = Menu(gui)
 
-    global openrecent_variable, autosave_variable
+    # Declaring any useful variables
+    global openrecent_variable, autosave_variable, files_explorer_view_var, line_numbers_view_var, img_folder, img_python_file, img_markdown_file, img_unknown_file
+
+    try:
+        img_folder = PhotoImage(file='./icons/folder.gif')
+        img_python_file = PhotoImage(file='./icons/file_python.gif')
+        img_markdown_file = PhotoImage(file='./icons/file_markdown.gif')
+        img_unknown_file = PhotoImage(file='./icons/file_unknown.gif')
+    except:
+        img_folder = ''
+        img_python_file = ''
+        img_markdown_file = ''
+        img_unknown_file = ''
+
     openrecent_variable = BooleanVar()
     autosave_variable = BooleanVar()
+    files_explorer_view_var = BooleanVar()
+    line_numbers_view_var = BooleanVar()
 
     openrecent_variable.set(config['always.open.recent'])
     autosave_variable.set(config['auto.save'])
+    files_explorer_view_var.set(config['show.filesexplorer'])
+    line_numbers_view_var.set(config['show.linenumbers'])
 
+    # Configuring main menu
     file_menu = Menu(menu_bar, tearoff=0)
     file_menu.add_command(label='New', command=new_file, accelerator='Ctrl+N')
     file_menu.add_separator()
-    file_menu.add_command(label='Open file', command=open_file, accelerator='Ctrl+O')
+    file_menu.add_command(label='Open File', command=open_file, accelerator='Ctrl+O')
+    file_menu.add_command(label='Open Folder', command=files_explorer_button_open_dir)
     file_menu.add_separator()
     file_menu.add_command(label='Save', command=save_file, accelerator='Ctrl+S')
-    file_menu.add_command(label='Save as', command=save_as_file)
+    file_menu.add_command(label='Save As...', command=save_as_file)
     file_menu.add_separator()
-    file_menu.add_checkbutton(label='Auto-save', command=toggle_autosave, variable=autosave_variable)
-    file_menu.add_checkbutton(label='Open recent', command=toggle_openrecent, variable=openrecent_variable)
+    file_menu.add_checkbutton(label='Auto Save', command=toggle_autosave, variable=autosave_variable)
+    file_menu.add_checkbutton(label='Open Recent', command=toggle_openrecent, variable=openrecent_variable)
     file_menu.add_separator()
     file_menu.add_command(label='Exit', command=exit_project, accelerator='Alt+F4')
 
@@ -698,8 +887,8 @@ class IDE:
     edit_menu.add_command(label='Undo', command=lambda: editor_undo(), accelerator='Ctrl+Z')
     edit_menu.add_command(label='Redo', command=lambda: editor_redo(), accelerator='Ctrl+Y')
     edit_menu.add_separator()
-    edit_menu.add_command(label='Search keyword', command=lambda: editor_search(), accelerator='Ctrl+F')
-    edit_menu.add_command(label='Format code', command=lambda: formatter())
+    edit_menu.add_command(label='Search Keyword', command=lambda: editor_search(), accelerator='Ctrl+F')
+    edit_menu.add_command(label='Formatter', command=lambda: formatter())
     edit_menu.add_separator()
     edit_menu.add_command(label='Copy', command=lambda: editor.event_generate("<<Copy>>"), accelerator='Ctrl+C')
     edit_menu.add_command(label='Cut', command=lambda: editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
@@ -707,11 +896,18 @@ class IDE:
 
     menu_bar.add_cascade(label='Edit', menu=edit_menu)
 
+    view_menu = Menu(menu_bar, tearoff=0)
+
+    view_menu.add_checkbutton(label='Files Explorer', command=lambda: toggle_files_explorer_view(), variable=files_explorer_view_var)
+    view_menu.add_checkbutton(label='Line Numbers', command=lambda: toggle_line_numbers_view(), variable=line_numbers_view_var)
+
+    menu_bar.add_cascade(label='View', menu=view_menu)
+
     python_menu = Menu(menu_bar, tearoff=0)
-    python_menu.add_command(label='New prompt', command=open_command_prompt)
+    python_menu.add_command(label='New Python Prompt', command=open_command_prompt)
     python_menu.add_command(label='Run', command=run_project, accelerator='F5')
     python_menu.add_separator()
-    python_menu.add_command(label='Install packages', command=install_libraries, accelerator='Ctrl+L')
+    python_menu.add_command(label='Install Packages', command=install_libraries, accelerator='Ctrl+L')
     python_menu.add_command(label='Settings', command=show_settings, accelerator='F8')
 
     menu_bar.add_cascade(label='Python', menu=python_menu)
@@ -736,13 +932,31 @@ class IDE:
     scrollbar_xview = Scrollbar(main_frame, orient=HORIZONTAL)
     scrollbar_xview.pack(side=BOTTOM, fill=X)
 
+    # Tree view (Files Explorer)
+    global files_explorer_frame, files_explorer_tree, files_explorer_ask_dir_btn
+    files_explorer_frame = Frame(main_frame)
+    if (config["show.filesexplorer"]): files_explorer_frame.pack(side=LEFT, fill=BOTH, padx=5, pady=5)
+
+    files_explorer_btns_frame = Frame(files_explorer_frame)
+    files_explorer_btns_frame.pack(side=TOP)
+
+    Button(files_explorer_btns_frame, text='Open Folder', width=12, command=files_explorer_button_open_dir).pack(side=LEFT, padx=5, pady=5)
+    Button(files_explorer_btns_frame, text='Refresh', width=10, command=files_explorer_update).pack(side=RIGHT, padx=5, pady=5)
+
+    files_explorer_tree = ttk.Treeview(files_explorer_frame)
+    files_explorer_tree.heading('#0', text='Files Explorer')
+
+    files_explorer_tree.bind("<<TreeviewSelect>>", files_explorer_on_select)
+
+    files_explorer_tree.pack(side=LEFT, fill=BOTH)
+
     # Editor and line numbers
     global editor, linenums
     editor = Text(main_frame, undo=True, yscrollcommand=scrollbar_yview.set, xscrollcommand=scrollbar_xview.set, wrap=NONE)
     editor.pack(padx=5, pady=5, fill=BOTH, side=RIGHT, expand=True)
 
     linenums = TkLineNumbers(main_frame, editor, justify=RIGHT)
-    linenums.pack(fill=Y, side=LEFT, padx=5, pady=5)
+    if (config['show.linenumbers']): linenums.pack(fill=Y, side=RIGHT, padx=5, pady=5)
 
     global editor_commands
     editor_commands = Menu(gui, tearoff=0)
@@ -753,12 +967,12 @@ class IDE:
     editor_commands.add_command(label='Cut', command=lambda: editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
     editor_commands.add_command(label='Paste', command=lambda: editor.event_generate("<<Paste>>"), accelerator='Ctrl+V')
     editor_commands.add_separator()
-    editor_commands.add_command(label='Search keyword', command=lambda: editor_search(), accelerator='CTRL+F')
+    editor_commands.add_command(label='Search Keyword', command=lambda: editor_search(), accelerator='CTRL+F')
     editor_commands.add_command(label='Run', command=lambda: run_project(), accelerator='F5')
-    editor_commands.add_command(label='Format code', command=lambda: formatter())
+    editor_commands.add_command(label='Formatter', command=lambda: formatter())
     editor_commands.add_command(label='Variables', command=lambda: extract_variables_functions_classes())
     editor_commands.add_separator()
-    editor_commands.add_command(label='Select all', command=lambda: editor.event_generate("<<SelectAll>>"))
+    editor_commands.add_command(label='Select All', command=lambda: editor.event_generate("<<SelectAll>>"))
     editor_commands.add_command(label='Delete', command=lambda: editor.event_generate("<<Clear>>"), accelerator='Del')
 
     # Configuring scroll bar
@@ -809,26 +1023,9 @@ class IDE:
     recent_filepath = config['recent.file.path']
 
     if (recent_filepath and config['always.open.recent']):
-        try:
-            with open(recent_filepath, 'r') as file:
-                if (file.readable() == False):
-                    messagebox('The recent file is not readable, couldn\'t open the file.', 'err')
-                else:
-                    text = file.read()
+        open_file(recent_filepath)
 
-                    editor.delete('1.0', END)
-                    editor.insert('1.0', text)
-            
-                    file.close()
-
-                    set_file_path(recent_filepath)
-                    set_edited(False)
-
-                    status_bar.config(text='Opened recent file: ' + recent_filepath)
-
-                    change_syntax_highlighting(editor)
-        except:
-            pass
+    if (config['update.check']): check_latest_release_from_github()
 
     gui.mainloop()
 
