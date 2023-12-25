@@ -1,1032 +1,1215 @@
 from tkinter import *
-from tkinter.filedialog import askopenfilename, asksaveasfilename, askdirectory
-from tkinter import messagebox as msgbox
-from tkinter import ttk
+from tkinter import messagebox as tkinter_messagebox
+from tkinter import filedialog
+from tkinter import colorchooser
 from tklinenums import TkLineNumbers
-from tkhtmlview import HTMLLabel
-import requests
-from pkg_resources import working_set
+from threading import Thread, Event
+import tkinter.ttk as ttk
 import idlelib.colorizer as ic
 import idlelib.percolator as ip
+import requests, webbrowser
 import re
-import os
 import json
-from threading import Thread
 import subprocess
-import ast
-import webbrowser
-import markdown
-import winotify
+import platform
+import os
+import keyword, builtins, pkg_resources
 
-global file_path, edited, main_dir, config, sparklypython_version
-file_path = ''
-edited = False
-main_dir = ''
-config = {
-        "default.python.command": "py",
-        "terminal.color.hex": "F",
-        "recent.file.path": None,
-        "pause.terminal.onend": True,
-        "newline.with.tabs": True,
-        "always.open.recent": True,
-        "save.on.run": True,
-        "auto.save": False,
-        "show.filesexplorer": True,
-        "show.linenumbers": True,
-        "update.check": True
-}
-sparklypython_version = 'v1.3.0'
+__version__ = 'v1.4.0-beta-1'
 
-def messagebox(content: str, type: str):
+def messagebox(content: str, type: str, title=None):
     if (type == 'info'):
-        msgbox.showinfo('SparklyPython - Info', content)
-    elif (type == 'err'):
-        msgbox.showerror('SparklyPython - Error', content)
-    elif (type == 'warn'):
-        msgbox.showwarning('SparklyPython - Warning', content)
+        tkinter_messagebox.showinfo(title or 'SparklyPython - Info', content)
+    elif (type == 'error'):
+        tkinter_messagebox.showerror(title or 'SparklyPython - Error', content)
+    elif (type == 'warning'):
+        tkinter_messagebox.showwarning(title or 'SparklyPython - Warning', content)
     else:
         pass
     
-def show_notification(title: str, message: str, actions=None):
-    noti = winotify.Notification(
-        app_id='SparklyPython App',
-        title=title,
-        msg=message,
-        icon='',
-        duration='short'
-    )
+def center(win:Toplevel|Tk):
+    win.update_idletasks()
 
-    for i in actions:
-        print(i)
+    width = win.winfo_width()
+    frm_width = win.winfo_rootx() - win.winfo_x()
+    win_width = width + 2 * frm_width
 
-        noti.add_actions(i[0], i[1])
+    height = win.winfo_height()
+    titlebar_height = win.winfo_rooty() - win.winfo_y()
+    win_height = height + titlebar_height + frm_width
 
-    noti.show()
+    x = win.winfo_screenwidth() // 2 - win_width // 2
+    y = win.winfo_screenheight() // 2 - win_height // 2
+
+    win.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+    win.deiconify()
+
+class SparklyPythonNotebookWindow:
+    def __init__(self, master, title, settings, geometry=None, on_ok=None):
+        self.result = []
+        self.master = master
+        self.root = Toplevel()
+        self.root.geometry(geometry or '400x300')
+        self.root.resizable(False, False)
+        self.root.title(title)
+
+        self.loading = None
+
+        try:
+            self.root.iconbitmap('./icon.ico')
+        except: pass
+
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(expand=TRUE, fill=BOTH, padx=5, pady=5)
+
+        self.results = []
+
+        self.split_notebooks(settings)
+
+        buttons_frame = Frame(self.root)
+        buttons_frame.pack(side=BOTTOM, pady=10, padx=10)
+
+        save_button = Button(buttons_frame, width=10, text='OK', command=lambda: on_ok(self.root, self.results))
+        save_button.pack(side=RIGHT, padx=5)
+
+        cancel_button = Button(buttons_frame, width=10, text='Cancel', command=self.root.destroy)
+        cancel_button.pack(side=LEFT, padx=5)
+
+    def split_notebooks(self, settings):
+        for setting in settings:
+            page_name = setting[0]
+            page_settings = setting[1]
+
+            page_frame = self.create_widgets(page_settings)
+            page_frame.pack(expand=TRUE, fill=BOTH)
+
+            self.notebook.add(page_frame, text=page_name, state=DISABLED if len(page_settings) <= 0 else NORMAL)
+
+    def create_widgets(self, page_settings):
+        main_frame = Frame(self.notebook)
+
+        for setting in page_settings:
+            secondary_frame = Frame(main_frame)
+
+            widget_type = setting[1]
+
+            if widget_type == 'Entry':
+                label, _, default_value, config_value = setting
+
+                self.create_entry(secondary_frame, label, default_value, config_value)
+            elif widget_type == 'Checkbutton':
+                label, _, default_value, config_value = setting
+
+                self.create_checkbutton(secondary_frame, label, default_value, config_value)
+            elif widget_type == 'Dropdown':
+                label, _, options, default_value, config_value = setting
+
+                self.create_dropdown(secondary_frame, label, options, default_value, config_value)
+            elif widget_type == 'Color':
+                label, _, default_value, config_value = setting
+
+                self.create_colorchooser(secondary_frame, label, default_value, config_value)
+            else:
+                label = setting
+
+                self.create_label(secondary_frame, label)
+            
+            secondary_frame.pack(fill=X, side=TOP, padx=5, pady=5)
+        
+        return main_frame
     
-def check_latest_release_from_github():
-    try:
-        def main():
+    def create_label(self, secondary_frame, label):
+        label_widget = Label(secondary_frame, text=label, justify=LEFT)
+        label_widget.pack(side=LEFT)
+
+        label_widget.bind('<Configure>', lambda _: label_widget.config(wraplength=label_widget.winfo_width()))
+
+    def create_entry(self, secondary_frame, label, default_value, config_value):
+        Label(secondary_frame, text=label).pack(side=LEFT)
+        entry_var = StringVar(self.notebook, value=default_value)
+
+        entry = Entry(secondary_frame, textvariable=entry_var, width=25)
+        entry.pack(side=RIGHT, padx=5)
+        self.results.append((entry_var, config_value))
+
+    def create_checkbutton(self, secondary_frame, label, default_value, config_value):
+        checkbutton_var = BooleanVar(self.notebook, value=default_value)
+
+        checkbutton = Checkbutton(secondary_frame, text=label, variable=checkbutton_var)
+        checkbutton.pack(side=LEFT)
+        self.results.append((checkbutton_var, config_value))
+
+    def create_dropdown(self, secondary_frame, label, options, default_value, config_value):
+        Label(secondary_frame, text=label).pack(side=LEFT)
+        dropdown_var = StringVar(self.notebook, value=default_value)
+
+        dropdown = ttk.Combobox(secondary_frame, textvariable=dropdown_var, values=options, state='readonly')
+        dropdown.pack(side=RIGHT, padx=5)
+        self.results.append((dropdown_var, config_value))
+
+    def create_colorchooser(self, secondary_frame, label, default_value, config_value):
+        Label(secondary_frame, text=label).pack(side=LEFT)
+        entry_var = StringVar(self.notebook, value=default_value)
+
+        def open_color_chooser():
+            res = colorchooser.askcolor(default_value)
+
+            if (res[1] == None): return
+
+            entry_var.set(res[1].upper())
+
+        def reset_color():
+            for key in self.master.default_settings:
+                if (key[0] == config_value):
+                    entry_var.set(key[1])
+                
+        reset_button = Button(secondary_frame, text='Reset', command=reset_color, width=10)
+        reset_button.pack(side=RIGHT, padx=5)
+
+        chooser_button = Button(secondary_frame, text='Edit', command=open_color_chooser, width=10)
+        chooser_button.pack(side=RIGHT, padx=5)
+
+        entry = Entry(secondary_frame, textvariable=entry_var, width=10, state=DISABLED)
+        entry.pack(side=RIGHT, padx=5)
+
+        self.results.append((entry_var, config_value))
+
+class SparklyPythonTooltip:
+    def __init__(self, widget:any, text:str):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self.id = None
+        self.widget.bind('<Enter>', self.enter)
+        self.widget.bind('<Leave>', self.leave)
+
+    def show_tooltip(self):
+        x, y, _, _ = self.widget.bbox(INSERT)
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 25
+
+        self.tooltip_window = Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+
+        label = Label(self.tooltip_window, text=self.text, background='#FFFFe0', relief=SOLID, borderwidth=1)
+        label.pack(ipadx=1)
+
+    def hide_tooltip(self):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+
+    def enter(self, event):
+        self.id = self.widget.after(1000, self.show_tooltip)
+
+    def leave(self, event):
+        if self.id:
+            self.widget.after_cancel(self.id)
+        self.hide_tooltip()
+
+class SparklyPythonLoadingTopLevel():
+    def __init__(self, total:int):
+        self.toplvl = Toplevel()
+        self.total = total
+
+        self.step = 0
+
+        center(self.toplvl)
+
+        self.toplvl.title('Loading...')
+        self.toplvl.geometry('250x50')
+        self.toplvl.resizable(0, 0)
+
+        try:
+            self.toplvl.iconbitmap('./icon.ico')
+        except: pass
+        
+        def on_closing(): pass
+
+        self.toplvl.protocol("WM_DELETE_WINDOW", on_closing)
+
+        self.label = Label(self.toplvl, text='0%')
+        self.label.pack(side=TOP)
+
+        self.progress_bar_variable = IntVar(self.toplvl)
+
+        self.progress_bar = ttk.Progressbar(self.toplvl, maximum=100, mode='determinate', value=0, variable=self.progress_bar_variable, length=250)
+        self.progress_bar.pack(side=LEFT, fill=X, padx=5, pady=5)
+
+    def set_values(self, total):
+        self.total = total
+
+    def reset(self, reset_total=False):
+        self.step = 0
+
+        if (reset_total): self.total = 0
+
+    def add_step(self):
+        self.step += 1
+
+        res = (self.step / self.total) * 100
+        
+        try:
+            self.label.config(text=f'{round(res)}%')
+            self.progress_bar_variable.set(res)
+        except: pass
+
+    def reached_max(self):
+        return True if self.step >= self.total else False
+    
+    def destroy(self):
+        self.toplvl.destroy()
+
+class SparklyPythonAutocomplete():
+    def __init__(self, master:Tk, text:Text, keywords:list[str]):
+        self.text = text
+        self.keywords = keywords
+        self.master = master
+
+        self.__version__ = '1.0.0-beta-1'
+
+        self.listbox_frame = None
+        self.listbox = None
+        self.scrollbar = None
+
+        self.text.bind_all('<Key>', self.key_pressed)
+
+    def show_popup(self, matching_keys):
+        if not matching_keys:
+            self.hide_popup()
+            return
+
+        x, y, _, _ = self.text.bbox(INSERT)
+
+        x += 75 + (self.master.editor_font[1])
+        y += 20 + (self.master.editor_font[1])
+
+        if not self.listbox_frame:
+            self.listbox_frame = Frame(self.master)
+            self.listbox_frame.place(x=x, y=y)
+
+            self.listbox = Listbox(self.listbox_frame)
+
+            self.listbox.bind('<ButtonRelease-1>', self.on_listbox_select)
+
+            self.text.bind('<Tab>', self.tab_or_enter_pressed)
+            self.text.bind('<Return>', self.tab_or_enter_pressed)
+            self.text.bind('<Up>', self.arrow_up_pressed)
+            self.text.bind('<Down>', self.arrow_down_pressed)
+            self.text.bind('<Button-1>', lambda _: self.hide_popup())
+
+            self.listbox.pack(side=LEFT)
+
+            self.scrollbar = Scrollbar(self.listbox_frame, command=self.listbox.yview)
+            self.scrollbar.pack(side=RIGHT, fill=Y)
+            self.listbox.config(yscrollcommand=self.scrollbar.set)
+        else:
+            self.listbox_frame.place_configure(x=x, y=y)
+
+        self.listbox.delete(0, END)
+        for key in matching_keys:
+            self.listbox.insert(END, key)
+        
+        self.listbox.select_set(0)
+
+    def hide_popup(self):
+        if self.listbox_frame:
+            self.listbox_frame.destroy()
+            self.listbox_frame = None
+            self.listbox = None
+            self.scrollbar = None
+
+            self.text.unbind('<Tab>')
+            self.text.unbind('<Return>')
+            self.text.unbind('<Up>')
+            self.text.unbind('<Down>')
+
+            self.text.bind('<Return>', lambda _: self.master.editor_new_line())
+
+    def key_pressed(self, event):
+        if ('autocomplete.enabled' in self.master.settings and not self.master.settings['autocomplete.enabled']): return
+
+        self.master.after(10, self.get_current_text)
+
+    def get_current_text(self):
+        current_text = self.text.get('insert linestart', INSERT)
+
+        if (len(current_text) <= 0):
+            self.hide_popup()
+            return
+        
+        splitted = current_text.split(' ')
+        splitted = [s.replace('\t', '') for s in splitted]
+        index = len(splitted) - 1
+
+        if (current_text[len(current_text) - 1] == ' ' or current_text[len(current_text) - 1] == '\t'):
+            self.hide_popup()
+            return
+        
+        if index >= 0:
+            current_word = splitted[index]
+
+            if any(keyword == current_word for keyword in self.keywords):
+                self.hide_popup()
+                return
+
+            matching_keys = [key for key in self.keywords if key.startswith(current_word)] if self.master.settings['autocomplete.matchcase'] else [key for key in self.keywords if key.lower().startswith(current_word.lower())]
+            self.show_popup(matching_keys)
+
+    def on_listbox_select(self, event):
+        configured_indentation = self.master.settings['editor.indentation']
+
+        global indentation
+        indentation = '\t'
+        
+        if (configured_indentation != 'TAB' and configured_indentation.isdigit()):
+            indentation = ' ' * int(configured_indentation)
+
+        if self.listbox:
+            selected_item = self.listbox.get(self.listbox.curselection())
+
+            if selected_item:
+                current_text = self.text.get('insert linestart', INSERT)
+                splitted = current_text.split(' ')
+                splitted = [s.replace('\t', '') for s in splitted]
+                index = len(splitted) - 1
+
+                if index >= 0:
+                    tabs_count = current_text.count(indentation)
+
+                    full_text = self.text.get('insert linestart', 'insert lineend')
+                    second_splitted = full_text.split(' ')
+                    second_splitted = [s.replace('\t', '') for s in second_splitted]
+
+                    new_text = f'{indentation * tabs_count}' + ' '.join(splitted[:index] + [selected_item] + second_splitted[index + 1:])
+                    
+                    self.text.delete(f'{INSERT} linestart', f'{INSERT} lineend')
+                    self.text.insert(INSERT, new_text)
+
+                    selected_item_index = self.text.search(selected_item, 'insert linestart', 'insert lineend')
+
+                    if selected_item_index:
+                        line, column = map(int, selected_item_index.split('.'))
+                        new_index = f'{line}.{column + len(selected_item)}'
+                        self.text.mark_set(INSERT, new_index)
+
+                self.hide_popup()
+                self.text.focus_set()
+
+                return 'break'
+
+    def tab_or_enter_pressed(self, event):
+        self.master.after(10, self.pressed_after)
+
+        return 'break'
+
+    def pressed_after(self):
+        configured_indentation = self.master.settings['editor.indentation']
+
+        global indentation
+        indentation = '\t'
+        
+        if (configured_indentation != 'TAB' and configured_indentation.isdigit()):
+            indentation = ' ' * int(configured_indentation)
+
+        if self.listbox:
+            selected_item = self.listbox.get(self.listbox.curselection())
+
+            if selected_item:
+                current_text = self.text.get('insert linestart', INSERT)
+                splitted = current_text.split(' ')
+                splitted = [s.replace('\t', '') for s in splitted]
+                index = len(splitted) - 1
+
+                if index >= 0:
+                    tabs_count = current_text.count(indentation)
+
+                    full_text = self.text.get('insert linestart', 'insert lineend')
+                    second_splitted = full_text.split(' ')
+                    second_splitted = [s.replace('\t', '') for s in second_splitted]
+
+                    new_text = f'{indentation * tabs_count}' + ' '.join(splitted[:index] + [selected_item] + second_splitted[index + 1:])
+                
+                    self.text.delete(f'{INSERT} linestart', f'{INSERT} lineend')
+                    self.text.insert(INSERT, new_text)
+
+                    selected_item_index = self.text.search(selected_item, 'insert linestart', 'insert lineend')
+
+                    if selected_item_index:
+                        line, column = map(int, selected_item_index.split('.'))
+                        new_index = f'{line}.{column + len(selected_item)}'
+                        self.text.mark_set(INSERT, new_index)
+
+                self.hide_popup()
+
+                return 'break'
+            
+    def arrow_up_pressed(self, event):
+        if self.listbox:
+            current_selection = self.listbox.curselection()
+
+            if current_selection:
+                if current_selection[0] > 0:
+                    self.listbox.select_clear(current_selection[0])
+                    self.listbox.select_set(current_selection[0] - 1)
+                    self.listbox.see(current_selection[0] - 1)
+                else:
+                    self.listbox.select_clear(current_selection[0])
+                    self.listbox.select_set(self.listbox.size() - 1)
+            else:
+                self.listbox.select_set(self.listbox.size() - 1)
+
+        return 'break'
+    
+    def arrow_down_pressed(self, event):
+        if self.listbox:
+            current_selection = self.listbox.curselection()
+
+            if current_selection:
+                if current_selection[0] < self.listbox.size() - 1:
+                    self.listbox.select_clear(current_selection[0])
+                    self.listbox.select_set(current_selection[0] + 1)
+                    self.listbox.see(current_selection[0] + 1)
+                else:
+                    self.listbox.select_clear(current_selection[0])
+                    self.listbox.select_set(0)
+        
+        return 'break'
+
+class StoppableThread(Thread):
+    def __init__(self,  *args, **kwargs):
+        super(StoppableThread, self).__init__(*args, **kwargs)
+        self._stop_event = Event()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def stopped(self):
+        return self._stop_event.is_set()
+
+class SparklyPythonIDE(Tk):    
+    def __init__(self):
+        super().__init__()
+
+        try:
+            self.iconbitmap('./icon.ico')
+        except: pass
+
+        self.current_file_path = ''
+        self.current_main_dir = ''
+        self.text_edited = False
+        self.settings = {
+            'recent_file_path': ''
+        }
+        self.default_settings = [
+            ('window.update_check', True),
+            ('terminal.python_command', 'python'), ('terminal.pause', True), ('terminal.save_file', True),
+            ('linenumbers.justify', 'Right'), ('linenumbers.enabled', True),
+            ('editor.indentation', 'TAB'), ('editor.indentation_on_line', True), ('editor.open_recent_file', True), ('editor.font_name', 'Courier New'),
+            ('highlighter.comment', '#808080'), ('highlighter.keyword', '#1220E6'), ('highlighter.builtin', '#FF0000'), ('highlighter.string', '#008000'), ('highlighter.def', '#7F7F00'), ('highlighter.number', '#FF6600'),
+            ('autocomplete.enabled', True), ('autocomplete.matchcase', False),
+        ]
+        self.python_process = None
+
+        for setting in self.default_settings:
+            self.settings[setting[0]] = setting[1]
+
+        self.title('SparklyPython')
+        self.geometry('1200x600')
+
+        self.check_configuration_file()
+
+        # Menu bar configuration
+        self.menu_bar = Menu(self)
+
+        file_menu = Menu(self.menu_bar, tearoff=0)
+        file_menu.add_command(label='New', command=self.new_file, accelerator='Ctrl+N')
+        file_menu.add_separator()
+        file_menu.add_command(label='Open File', command=self.open_file, accelerator='Ctrl+O')
+        file_menu.add_separator()
+        file_menu.add_command(label='Save', command=self.save_file, accelerator='Ctrl+S')
+        file_menu.add_command(label='Save As...', command=self.save_as_file)
+        file_menu.add_separator()
+        file_menu.add_command(label='Exit', command=self.exit_program, accelerator='Alt+F4')
+
+        self.menu_bar.add_cascade(label='Help', menu=file_menu)
+
+        edit_menu = Menu(self.menu_bar, tearoff=0)
+        edit_menu.add_command(label='Undo', command=self.editor_undo, accelerator='Ctrl+Z')
+        edit_menu.add_command(label='Redo', command=self.editor_redo, accelerator='Ctrl+Y')
+        edit_menu.add_separator()
+        edit_menu.add_command(label='Zoom In', command=self.editor_zoom_in, accelerator='Ctrl+Plus')
+        edit_menu.add_command(label='Zoom Out', command=self.editor_zoom_out, accelerator='Ctrl+Minus')
+        edit_menu.add_separator()
+        edit_menu.add_command(label='Format Indentation', command=self.editor_format_indentation, accelerator='Shift+Alt+F')
+        edit_menu.add_separator()
+        edit_menu.add_command(label='Copy', command=lambda: self.editor.event_generate("<<Copy>>"), accelerator='Ctrl+C')
+        edit_menu.add_command(label='Cut', command=lambda: self.editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
+        edit_menu.add_command(label='Paste', command=lambda: self.editor.event_generate("<<Paste>>"), accelerator='Ctrl+V')
+
+        self.menu_bar.add_cascade(label='Edit', menu=edit_menu)
+
+        python_menu = Menu(self.menu_bar, tearoff=0)
+        python_menu.add_command(label='New Prompt', command=self.python_new_prompt)
+        python_menu.add_separator()
+        python_menu.add_command(label='Run Python', command=self.python_run, accelerator='F5')
+        python_menu.add_command(label='Stop Python', command=self.python_stop)
+
+        self.menu_bar.add_cascade(label='Python', menu=python_menu)
+        
+        self.menu_bar.add_command(label='Settings', command=self.open_settings)
+
+        self.menu_bar.add_command(label='About', command=self.open_about)
+
+        # Add menus to the menu bar
+        self.config(menu=self.menu_bar)
+
+        # All required frames
+        self.status_frame = Frame(self)
+        self.status_frame.pack(fill=X, pady=5, side=BOTTOM)
+
+        self.main = Frame(self)
+        self.main.pack(expand=TRUE, fill=BOTH)
+
+        self.editor_frame = Frame(self.main)
+        self.editor_frame.pack(side=RIGHT, expand=TRUE, fill=BOTH)
+
+        self.linenumbers_frame = Frame(self.main)
+        self.linenumbers_frame.pack(side=LEFT, fill=Y)
+
+        # Adding scroll bars
+        self.editor_scrollbar_yview = Scrollbar(self.editor_frame, orient=VERTICAL)
+        self.editor_scrollbar_yview.pack(side=RIGHT, fill=Y)
+
+        self.editor_scrollbar_xview = Scrollbar(self.editor_frame, orient=HORIZONTAL)
+        self.editor_scrollbar_xview.pack(side=BOTTOM, fill=X)
+
+        # Create the editor and ballon tip
+        self.editor_font = (self.settings['editor.font_name'], 10)
+
+        self.editor = Text(self.editor_frame, undo=True, wrap=NONE, font=self.editor_font)
+        self.editor.pack(side=RIGHT, expand=TRUE, fill=BOTH, padx=5, pady=5)
+
+        # Autocomplete
+        installed_packages = list([i.key for i in pkg_resources.working_set])
+        sorted_keywords = sorted(keyword.kwlist + dir(builtins) + installed_packages)
+        self.python_keywords = [i for n, i in enumerate(sorted_keywords) if i not in sorted_keywords[:n]]
+
+        self.autocomplete = SparklyPythonAutocomplete(self, self.editor, self.python_keywords)
+
+        # Bindings configuration
+        self.editor.bind('<Return>', lambda _: self.editor_new_line())
+        self.editor.bind('<Button-3>', self.editor_show_rightclick_commands)
+        self.editor.bind('<Button-1>', lambda _: self.editor_update_line_info())
+        self.editor.bind('<Control-Key-s>', lambda _: self.save_file())
+        self.editor.bind('<Control-Key-o>', lambda _: self.save_as_file())
+        self.editor.bind('<Control-Key-n>', lambda _: self.new_file())
+        self.editor.bind('<Control-Key-f>', lambda _: self.editor_search_keyword())
+        self.editor.bind('<Shift-Alt-F>', lambda _: self.editor_format_indentation())
+
+        self.editor.bind('<Key>', lambda _: self.editor_key_pressed())
+
+        self.bind('<Alt-F4>', lambda _: self.exit_program())
+        self.bind('<F8>', lambda _: self.python_new_prompt())
+        self.bind('<F5>', lambda _: self.python_run())
+        self.bind('<Control-KeyPress-plus>', lambda _: self.editor_zoom_in())
+        self.bind('<Control-KeyPress-minus>', lambda _: self.editor_zoom_out())
+
+        self.protocol('WM_DELETE_WINDOW', self.exit_program)
+
+        # Main line numbers widget
+        self.linenumbers = TkLineNumbers(self.linenumbers_frame, textwidget=self.editor, justify=RIGHT if self.settings['linenumbers.justify'] == 'Right' else LEFT)
+
+        if (self.settings['linenumbers.enabled']): self.linenumbers.pack(expand=TRUE, fill=Y, padx=5, pady=5)
+        
+        # Configuring scroll bar
+        self.editor_scrollbar_yview.config(command=self.scroll_both_y)
+        self.editor_scrollbar_xview.config(command=self.scroll_both_x)
+        self.editor.config(yscrollcommand=self.update_scroll_y, xscrollcommand=self.update_scroll_x)
+
+        # Open recent file
+        if (self.settings['editor.open_recent_file'] and len(self.settings['recent_file_path']) > 0):
             try:
-                response = requests.get('https://api.github.com/repos/TFAGaming/SparklyPython/releases')
-                response.raise_for_status()
-                github_info = response.json()
+                with open(self.settings['recent_file_path'], 'r') as file:
+                    text = file.read().strip()
 
-                if (len(github_info) > 0):
-                    latest = github_info[0]['tag_name']
+                    self.editor.delete('1.0', END)
+                    self.editor.insert('1.0', text)
+            
+                    file.close()
 
-                    if (latest != sparklypython_version):
-                        show_notification(
-                            title='New Update - ' + latest,
-                            message=f'You are currently using the version {sparklypython_version}, while the latest version is {latest}. Click on the button below to install from GitHub!',
-                            actions=[
-                                (f'Install {latest}', 'https://github.com/TFAGaming/SparklyPython/releases/tag/' + latest)
-                            ])
+                self.current_file_path = self.settings['recent_file_path']
+
+                self.set_window_title_status(edited=False)
+
+                self.highlight_python_source()
+                self.linenumbers.redraw()
             except:
                 pass
 
-        thread = Thread(target=main)
-        thread.start()
-    except:
-        pass
+        # Status frame
+        ttk.Separator(self, orient=HORIZONTAL).pack(fill=X)
 
-class CustomTopLevel:
-    def __init__(self, title, geometry, settings, on_ok):
-        self.settings = settings
-        self.result = []
-        self.root = Toplevel()
-        self.root.geometry(geometry)
-        self.root.resizable(0, 0)
-        self.root.title(title)
-        self.on_ok = on_ok
+        status_frame_run_button = Button(self.status_frame, text='Run', width=10, command=self.python_run)
+        status_frame_run_button.pack(side=LEFT, padx=10)
+        ttk.Separator(self.status_frame, orient=VERTICAL).pack(side=LEFT, fill=Y, padx=10)
 
+        SparklyPythonTooltip(status_frame_run_button, 'Starts a new Python prompt and runs the code.')
+
+        self.status_text = Label(self.status_frame, text='SparklyPython is ready.', justify=LEFT)
+        self.status_text.pack(side=LEFT, padx=10)
+
+        Label(self.status_frame, text='Version: ' + __version__, justify=RIGHT).pack(side=RIGHT, padx=10)
+        ttk.Separator(self.status_frame, orient=VERTICAL).pack(side=RIGHT, fill=Y, padx=10)
+
+        self.line_info_text = Label(self.status_frame, text='Ln 0, Col 0, Char 0', justify=RIGHT)
+        self.line_info_text.pack(side=RIGHT, padx=10)
+        ttk.Separator(self.status_frame, orient=VERTICAL).pack(side=RIGHT, fill=Y, padx=10)
+
+        if (self.settings['window.update_check']):
+            self.check_updates()
+    
+    def check_configuration_file(self):
         try:
-            self.root.iconbitmap('icon.ico')
+            with open('sparklypython-config.json', 'r') as file:
+                loaded_config = json.load(file)
+
+                global has_all_keys
+                has_all_keys = True
+                array_settings = []
+
+                for key in self.settings: array_settings.append(key)
+
+                for key in loaded_config:
+                    if key in array_settings: continue
+
+                    has_all_keys = False
+                    break
+
+                if (has_all_keys):
+                    self.settings = loaded_config
+                else:
+                    self.write_configuration_file(self.settings)
         except:
-            self.root.iconbitmap(None)
-
-        self.create_widgets()
-
-    def create_widgets(self):
-        for label, widget_type, options, default_value, config_value in self.settings:
-            frame = Frame(self.root)
-            frame.pack(pady=5, padx=10, fill=X)
-
-            if widget_type == "Entry":
-                self.create_entry(frame, label, default_value, config_value)
-            elif widget_type == "Checkbutton":
-                self.create_checkbutton(frame, label, default_value, config_value)
-            elif widget_type == "Dropdown":
-                self.create_dropdown(frame, label, options, default_value, config_value)
-
-        btns_frame = Frame(self.root)
-        btns_frame.pack(side=BOTTOM, pady=10, padx=10)
-
-        save_button = Button(btns_frame, width=10, text="OK", command=lambda: self.on_ok(self.result, self.root))
-        save_button.pack(side=RIGHT, padx=5)
-
-        cancel_button = Button(btns_frame, width=10, text="Cancel", command=self.root.destroy)
-        cancel_button.pack(side=LEFT, padx=5)
- 
-    def create_entry(self, frame, label, default_value, config_value):
-        Label(frame, text=label).pack(side=LEFT)
-        entry_var = StringVar(value=default_value)
-
-        if (default_value): entry_var.set(default_value)
-
-        entry = Entry(frame, textvariable=entry_var)
-        entry.pack(side=RIGHT, padx=5)
-        self.result.append((entry_var, config_value))
-
-    def create_checkbutton(self, frame, label, default_value, config_value):
-        check_var = BooleanVar(value=default_value)
-
-        if (default_value): check_var.set(default_value)
-
-        checkbutton = Checkbutton(frame, text=label, variable=check_var)
-        checkbutton.pack(side=LEFT)
-        self.result.append((check_var, config_value))
-
-    def create_dropdown(self, frame, label, options, default_value, config_value):
-        Label(frame, text=label).pack(side=LEFT)
-        dropdown_var = StringVar()
-
-        if (default_value): dropdown_var.set(default_value)
-
-        dropdown = ttk.Combobox(frame, textvariable=dropdown_var, values=options, state='readonly')
-        dropdown.pack(side=RIGHT, padx=5)
-        self.result.append((dropdown_var, config_value))
-        
-
-def save_config(data):
-    try:
-        with open('sparklypython-config.json', 'w') as file:
-            string = json.dumps(data)
-
-            file.write(string)
-            file.close()
-    except:
-        messagebox('Failed to save the configuration, please enable the program to read, write, and create files.', 'err')
-
-try:
-    with open('sparklypython-config.json', 'r') as file:
-        config = json.load(file)
-except:
-    try:
-        open('sparklypython-config.json', "x")
-
-        save_config(config)
-    except:
-        messagebox('Failed to start the program, please enable the program to read, write, and create files.', 'err')
-        exit()
-
-def user_typed_event():
-    editor.tag_remove('highlight', '1.0', END)
-
-    change_syntax_highlighting(editor)
-
-    linenums.redraw()
-
-    set_edited(True)
-
-    if (config['auto.save'] == True):
-        save_file()
-
-def save_file():
-    if (len(file_path) < 1):
-        save_as_file()
-
-        return
-
-    try:
-        with open(file_path, 'w') as file:
-            text = editor.get('1.0', END).strip()
-
-            file.write(text)
-            file.close()
-
-            set_edited(False)
-
-            status_bar.config(text='Saved: ' + file_path)
-    except:
-        messagebox('Unable to perform this action properly.', 'error')
-    
-def save_as_file():
-    path = asksaveasfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Save as', defaultextension='py')
-
-    if (len(path) < 1):
-        return
-
-    try:
-        with open(path, 'w') as file:
-            text = editor.get('1.0', END).strip()
-
-            file.write(text)
-            file.close()
-
-            set_file_path(path)
-            set_edited(False)
-
-            status_bar.config(text='Saved: ' + path)
-    except:
-        messagebox('Unable to perform this action properly.', 'error')
-
-def new_file():
-    if (edited):
-        res = msgbox.askyesno('SparklyPython - New File', 'Do you want to save the file before creating a new one?')
-
-        if (res): save_file()
-
-        set_file_path('')
-
-        editor.delete('1.0', END)
-
-        if (res):
-            status_bar.config(text='Saved previous file and created a new one.')
-        else: status_bar.config(text='Created a new file without saving previous file.')
-
-    else:
-        set_file_path('')
-
-        editor.delete('1.0', END)
-
-        status_bar.config(text='Created a new file.')
-
-    set_edited(False)
-    
-def open_file(another_path=None, allow_update_files_explorer=True):
-    try:
-        if (edited):
-            res = msgbox.askyesno('SparklyPython - New File', 'Do you want to save the file before opening another one?')
-
-            if (res): save_file()
-
-        path = ''
-        
-        if (another_path):
-            path = another_path
-        else:
-            path = askopenfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Open file')
-
-        if (len(path) <= 0): return
-
-        if (allow_update_files_explorer): files_explorer_update(os.path.dirname(path))
-
-        with open(path, 'r') as file:
-            if (file.readable() == False):
-                return messagebox('The file is not readable, couldn\'t open the file.', 'err')
-
-            text = file.read().strip()
-
-            editor.delete('1.0', END)
-            editor.insert('1.0', text)
-            
-            file.close()
-
-            set_file_path(path)
-            set_edited(False)
-
-            linenums.redraw()
-
-            status_bar.config(text='Opened: ' + path)
-
-            change_syntax_highlighting(editor)
-    except:
-        messagebox('Unable to perform this action properly.', 'err')
-
-def exit_project():
-    if (edited):
-        res = msgbox.askyesno('SparklyPython - Exit', 'Do you want to save the file before closing the program?')
-
-        if (res):
-            save_file()
-    
-    gui.destroy()
-        
-def run_project():
-    try:
-        if (len(editor.get('1.0', END)) <= 1):
-            messagebox('You cannot run a Python program with an empty code.', 'warn')
-
-            return
-
-        if (config["save.on.run"] == True): save_file()
-
-        redirect = file_path.split('/')
-        path = ''
-
-        for i in range(len(redirect) - 1):
-            split = redirect[i].split(' ')
-            if (len(split) > 1):
-                second = ''
-
-                for i in range(len(split)):
-                    if (i == len(split) - 1):
-                        second += split[i]
-                    else:
-                        second += split[i] + ' '
-
-                path += '\"' + second + '\"' + '/'
-            else: 
-                path += redirect[i] + '/'
-
-        file_name = f"\"{redirect[len(redirect) - 1].split('.')[0]}\""
-        command = config['default.python.command'] or 'py'
-        terminal_color = config['terminal.color.hex'] or 'F'
-
-        cmd_str = f'start cmd /k "cd {path} && title SparklyPython && color {terminal_color} && {command} {file_name}'
-
-        if (redirect[len(redirect) - 1].endswith('.py')):
-            cmd_str += '.py'
-
-        if (config['pause.terminal.onend'] == True):
-            cmd_str += ' && (pause && exit) || (pause && exit)"'
-        else: cmd_str += ' && (exit) || (exit)"'
-
-        os.system(cmd_str)
-
-        status_bar.config(text='Running: ' + file_path)
-    except:
-        messagebox('Failed to run the Python program, please check that the command \'py\' exist.', 'err')
-
-def open_command_prompt():
-    try:
-        os.system(f'start cmd /c "title SparklyPython && py && (pause && exit) || (pause && exit)"')
-    except:
-        messagebox('Failed to start a new Python prompt.', 'err')
-    
-def editor_undo():
-    try:
-        editor.edit_undo()
-    except:
-        pass
-
-def editor_redo():
-    try:
-        editor.edit_redo()
-    except:
-        pass
-
-def change_syntax_highlighting(txt: Text):
-    try:
-        cdg = ic.ColorDelegator()
-
-        #cdg.prog = re.compile(r'\b(?P<Group>okbruh)\b|' + ic.make_pat().pattern, re.S)
-        cdg.prog = re.compile(r'\b(?P<GroupForNumbers>\d+)\b|' + ic.make_pat().pattern, re.S)
-
-        cdg.idprog = re.compile(r'\s+(\w+|\d+)', re.S)
-
-        #cdg.tagdefs['Group'] = {'foreground': 'color', 'background': None}
-        cdg.tagdefs['GroupForNumbers'] = {'foreground': '#ff6600', 'background': None}
-
-        cdg.tagdefs['COMMENT'] = {'foreground': 'gray', 'background': None}
-        cdg.tagdefs['KEYWORD'] = {'foreground': '#1220e6', 'background': None}
-        cdg.tagdefs['BUILTIN'] = {'foreground': 'red', 'background': None}
-        cdg.tagdefs['STRING'] = {'foreground': 'green', 'background': None}
-        cdg.tagdefs['DEFINITION'] = {'foreground': '#7F7F00', 'background': None}
-
-        ip.Percolator(txt).insertfilter(cdg)
-    except:
-        pass
-
-def set_file_path(path: str):
-    global file_path
-    file_path = path
-
-    config['recent.file.path'] = path
-
-    save_config(config)
-
-def set_edited(toggle: bool):
-    global edited
-    edited = toggle
-
-def show_editor_commands(event):
-    editor_commands.tk_popup(event.x_root, event.y_root)
-
-def toggle_openrecent():
-    value = openrecent_variable.get()
-
-    config['always.open.recent'] = value
-
-    save_config(config)
-
-def toggle_autosave():
-    value = autosave_variable.get()
-
-    config['auto.save'] = value
-
-    save_config(config)
-
-def new_line():
-    linenums.redraw()
-
-    if (config["newline.with.tabs"] == False): return
-
-    cursor_pos = editor.index(INSERT)
-    current_line = editor.get(cursor_pos.split('.')[0] + ".0", cursor_pos)
-
-    if current_line.strip().endswith(":"):
-        if ('\t' in current_line):
-            tabs_count = current_line.count('\t')
-            editor.insert(INSERT, '\n' + '\t' * (tabs_count + 1))
-        else:
-            editor.insert(INSERT, '\n\t')
-    else:
-        cursor_pos = editor.index(INSERT)
-        current_line = editor.get(cursor_pos.split('.')[0] + ".0", cursor_pos)
-
-        if '\t' in current_line:
-            tabs_count = current_line.count('\t')
-            editor.insert(INSERT, '\n' + '\t' * (tabs_count))
-        else:
-            editor.insert(INSERT, '\n')
-
-    return 'break'
-
-def install_libraries():
-    toplvl = Toplevel()
-
-    toplvl.title('Install packages')
-    toplvl.geometry('400x120')
-    toplvl.resizable(0, 0)
-
-    try:
-        toplvl.iconbitmap('icon.ico')
-    except:
-        toplvl.iconbitmap(None)
-
-    global last_searched_package_name
-    last_searched_package_name = None
-
-    def main_search():
-        global last_searched_package_name
-
-        package_name = package_name_entry_var.get()
-
-        if not package_name:
-            messagebox('You must provide a package name to search and to install.', 'warn')
-            return
-
-        try:
-            response = requests.get(f'https://pypi.org/pypi/{package_name}/json')
-            response.raise_for_status()
-            package_info = response.json()
-
-            package_releases = list(package_info.get('releases', {}))
-            package_releases_reversed = package_releases[::-1]
-
-            last_searched_package_name = package_name
-
-            package_version_entry_var.set(package_releases_reversed[0])
-            package_version_entry.config(values=package_releases_reversed, state='readonly')
-            install_btn.config(state=NORMAL)
-        except:
-            messagebox(f'Failed to search the package \'{package_name}\'.', 'err')
-            return
-        
-    def main_install():
-        package_name = last_searched_package_name
-        package_version = package_version_entry_var.get()
-
-        cmd_package_name = f"{package_name}=={package_version}"
-
-        try:
-            subprocess.run(['pip', 'install', cmd_package_name], check=True, shell=True, startupinfo=subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW))
-
-            messagebox(f'The package \'{package_name}\' has been installed successfully.', 'info')
-        except subprocess.CalledProcessError as e:
-            messagebox(f'Failed to install package \'{package_name}\'. Error: {e}', 'err')
-
-    main_frame = Frame(toplvl)
-    main_frame.pack(side=TOP, fill=X, padx=5, pady=5)
-
-    Label(main_frame, text='Package name').pack(side=LEFT, fill=X)
-
-    global package_name_entry_var, install_btn, package_version_entry, package_version_entry_var
-    package_name_entry_var = StringVar()
-
-    package_name_entry = Entry(main_frame, width=30, textvariable=package_name_entry_var)
-    package_name_entry.pack(side=RIGHT, fill=X)
-
-    second_main_frame = Frame(toplvl)
-    second_main_frame.pack(side=TOP, fill=X, padx=5, pady=5)
-
-    Label(second_main_frame, text='Select version').pack(side=LEFT, fill=X)
-
-    install_btn = Button(second_main_frame, text='Install', state=DISABLED, width=10, command=main_install)
-    install_btn.pack(side=RIGHT, padx=5, pady=5)
-
-    package_version_entry_var = StringVar()
-
-    package_version_entry = ttk.Combobox(second_main_frame, state=DISABLED, values=[], textvariable=package_version_entry_var)
-    package_version_entry.pack(side=RIGHT, padx=5, pady=5)
-
-    buttons_frame = Frame(toplvl)
-    buttons_frame.pack(side=BOTTOM)
-
-    search_btn = Button(buttons_frame, text='Search', width=10, command=main_search)
-    search_btn.pack(side=RIGHT, padx=5, pady=5)
-
-    cancel_btn = Button(buttons_frame, text='Cancel', width=10, command=toplvl.destroy)
-    cancel_btn.pack(side=LEFT, padx=5, pady=5)
-
-    installed_packages = list({ f'{package.project_name.lower()} ({package.version})' for package in working_set })
-
-    Button(buttons_frame, text='View installed', width=15, command=lambda: messagebox('You can use \'pip list\' instead.\n\n' + '\n'.join(installed_packages), 'info')).pack(side=LEFT)
-
-    toplvl.mainloop()
-
-def editor_search():
-    settings = [
-        ("Keyword to search", "Entry", None, "", None),
-        ("No case", "Checkbutton", None, False, None)
-    ]
-
-    def main(results, root):
-        arr = []
-
-        for result in results:
-            arr.append(result[0].get())
-
-        editor.tag_delete("highlight")
-
-        editor.tag_configure('highlight', foreground=None, background='#00FFFF')
-
-        start_pos = '1.0'
-        while True:
-            start_pos = editor.search(arr[0], start_pos, stopindex=END, nocase=arr[1])
-
-            if not start_pos:
-                break
-
-            end_pos = f"{start_pos}+{len(arr[0])}c"
-            editor.tag_add('highlight', start_pos, end_pos)
-            start_pos = end_pos
-
-    CustomTopLevel(title='Search keyword', geometry='300x120', settings=settings, on_ok=main)
-
-def formatter():
-    text = editor.get("1.0", END)
-
-    text = text.replace("    ", "\t")
-
-    editor.delete("1.0", END)
-    editor.insert("1.0", text)
-
-def extract_variables_functions_classes():
-    class Table:
-        def __init__(self, root: Toplevel or Tk, total_rows: int, total_columns: int, lst: list):
-            self.tree = ttk.Treeview(root, columns=("Variable", "Type", "ID"), show="headings")
-
-            for col in ("Variable", "Type", "ID"):
-                self.tree.heading(col, text=col)
-                self.tree.column(col, width=100, anchor="center")
-
-            for i in range(total_rows):
-                self.tree.insert("", "end", values=lst[i])
-
-            self.tree.pack(fill="both", expand=True)
-
-    def get_readable_type(type_node):
-        if isinstance(type_node, ast.Name):
-            return type_node.id
-        elif isinstance(type_node, ast.Subscript):
-            if isinstance(type_node.value, ast.Name) and type_node.value.id == 'list':
-                return 'list[' + get_readable_type(type_node.slice) + ']'
-        else:
-            return 'Unknown'
-
-    code = editor.get('1.0', END)
-
-    parsed_code = ast.parse(code)
-    
-    result = []
-
-    for node in ast.walk(parsed_code):
-        if isinstance(node, ast.FunctionDef):
-            result.append({"name": node.name, "type": 'Function', "id": hex(id(node)).upper().replace('X', 'x')})
-        elif isinstance(node, ast.ClassDef):
-            result.append({"name": node.name, "type": 'Class', "id": hex(id(node)).upper().replace('X', 'x')})
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    result.append({"name": target.id, "type": 'Unknown', "id": hex(id(target)).upper().replace('X', 'x')})
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name):
-                result.append({"name": node.target.id, "type": get_readable_type(node.annotation), "id": hex(id(node.target)).upper().replace('X', 'x')})
-
-    if (len(result) <= 0):
-        messagebox('There are currently no variables in the code.', 'info')
-        return
-
-    toplvl = Toplevel()
-
-    toplvl.title('Variables')
-    toplvl.geometry('500x300')
-
-    try:
-        toplvl.iconbitmap('icon.ico')
-    except:
-        toplvl.iconbitmap(None)
-
-    Table(toplvl, len(result), 3, [[var['name'], var['type'], var['id']] for var in result])
-
-    toplvl.mainloop()
-
-def show_settings():
-    colors_list = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F']
-
-    settings = [
-        ("Default Python command", "Entry", None, config['default.python.command'] or 'py', 'default.python.command'),
-        ("Terminal prompt color", "Dropdown", colors_list, config['terminal.color.hex'] or 'F', 'terminal.color.hex'),
-        ("Terminal: Pause Terminal on end", "Checkbutton", None, config['pause.terminal.onend'], 'pause.terminal.onend'),
-        ("Editor: Add TABs on a new line", "Checkbutton", None, config['newline.with.tabs'], 'newline.with.tabs'),
-        ("Editor: Save file on Run", "Checkbutton", None, config['save.on.run'], 'save.on.run'),
-        ("Updater: Check latest version on startup", "Checkbutton", None, config['update.check'], 'update.check')
-    ]
-
-    def main(results, root):
-        for variable, config_value in results:
-            config[config_value] = variable.get()
-
-        save_config(config)
-
-        root.destroy()
-
-        messagebox('Successfully saved the new settings.', 'info')
-
-    CustomTopLevel(title='Settings configuration', geometry='300x260', settings=settings, on_ok=main)
-
-def scroll_both_y(action, position, type=None):
-    editor.yview_moveto(position)
-
-def scroll_both_x(action, position, type=None):
-    editor.xview_moveto(position)
-
-def update_scroll_y(first, last, type=None):
-    editor.yview_moveto(first)
-    scrollbar_yview.set(first, last)
-    linenums.redraw()
-
-def update_scroll_x(first, last, type=None):
-    editor.xview_moveto(first)
-    scrollbar_xview.set(first, last)
-    linenums.redraw()
-
-def toggle_line_numbers_view():
-    value = line_numbers_view_var.get()
-
-    if (value):
-        linenums.pack(fill=Y, side=RIGHT, padx=5, pady=5)
-    else:
-        linenums.pack_forget()
-
-    config["show.linenumbers"] = value
-
-    save_config(config)
-
-def show_about():
-    toplvl = Toplevel()
-
-    toplvl.title('SparklyPython - About')
-    toplvl.geometry('800x500')
-    toplvl.resizable(0, 0)
-
-    try:
-        toplvl.iconbitmap('icon.ico')
-    except:
-        toplvl.iconbitmap(None)
-
-    main_frame = Frame(toplvl)
-    main_frame.pack(side=TOP)
-
-    def display_markdown():
-        try:
-            with open('ABOUT.md', 'r', encoding='utf-8') as file:
-                markdown_content = file.read()
-
-                html_content = markdown.markdown(markdown_content)
-
-                html_label.set_html(html_content)
-        except:
-            messagebox('Failed to display the markdown file.', 'err')
-
-            toplvl.destroy()
-
-    global html_label
-    html_label = HTMLLabel(main_frame, html="")
-    html_label.pack(padx=10, pady=10, side=LEFT, expand=True, fill=BOTH)
-
-    display_markdown()
-
-    second_main_frame = Frame(toplvl)
-    second_main_frame.pack(side=BOTTOM)
-
-    ok_button = Button(second_main_frame, width=10, text='OK', command=toplvl.destroy)
-    ok_button.pack(side=BOTTOM, padx=5, pady=5)
-
-def populate_files_explorer(tree: ttk.Treeview, parent, folder, path_so_far="", show_warning=True):
-    if (len(folder) <= 0): return
- 
-    items = os.listdir(folder)
-
-    if (show_warning and len(items) > 20):
-        res = msgbox.askyesno('The selected directory has too many files to load, this might take some time.', 'warn', options=['-type=1'])
-
-    for item in items:
-        item_path = os.path.join(folder, item)
-        full_path = os.path.join(path_so_far, item)
-
-        if os.path.isdir(item_path):
-            folder_icon = tree.insert(parent, 'end', text=f' {item}', open=False, image=img_folder, values=(full_path, 'dir'))
-
-            populate_files_explorer(tree, folder_icon, item_path, path_so_far=full_path, show_warning=False)
-        else:
-            if (str(item).endswith('.py')): 
-                tree.insert(parent, 'end', text=f' {item}', image=img_python_file, values=(full_path, 'file'))
-            elif (str(item).endswith('.md')): 
-                tree.insert(parent, 'end', text=f' {item}', image=img_markdown_file, values=(full_path, 'file'))
-            else:
-                tree.insert(parent, 'end', text=f' {item}', image=img_unknown_file, values=(full_path, 'file'))
-
-def files_explorer_on_select(event):
-    selected_item = files_explorer_tree.selection()
-
-    if (not selected_item): return
-
-    full_path: str = os.path.join(main_dir, files_explorer_tree.item(selected_item, 'values')[0]).replace('\\', '/')
-    typeof = files_explorer_tree.item(selected_item, 'values')[1]
-
-    if (typeof == 'file'):
-        if (full_path.endswith('.py')):
-            open_file(full_path, False)
-        elif (full_path.endswith('.md')):
             try:
-                toplvl = Toplevel()
+                open('sparklypython-config.json', 'x')
+                
+                self.write_configuration_file(self.settings)
 
-                toplvl.title('Markdown - ' + full_path)
-                toplvl.geometry('800x500')
-
-                try:
-                    toplvl.iconbitmap('icon.ico')
-                except:
-                    toplvl.iconbitmap(None)
-
-                main_frame = Frame(toplvl)
-                main_frame.pack(side=TOP)
-
-                html_label = HTMLLabel(main_frame, html="")
-                html_label.pack(padx=10, pady=10, side=LEFT, expand=True, fill=BOTH)
-
-                second_main_frame = Frame(toplvl)
-                second_main_frame.pack(side=BOTTOM)
-
-                ok_button = Button(second_main_frame, width=10, text='OK', command=toplvl.destroy)
-                ok_button.pack(side=BOTTOM, padx=5, pady=5)
-
-                with open(full_path, 'r', encoding='utf-8') as file:
-                    markdown_content = file.read()
-
-                    html_content = markdown.markdown(markdown_content)
-
-                    html_label.set_html(html_content)
+                self.check_configuration_file()
             except:
-                messagebox('Failed to display the markdown file.', 'err')
+                messagebox('Error', 'err')
 
-def toggle_files_explorer_view():
-    value = files_explorer_view_var.get()
+    def write_configuration_file(self, data):
+        try:
+            with open('sparklypython-config.json', 'w') as file:
+                string = json.dumps(data, indent=4)
 
-    if (value):
-        files_explorer_frame.pack(side=LEFT, fill=BOTH, padx=5, pady=5)
-    else:
-        files_explorer_frame.pack_forget()
+                file.write(string)
+                file.close()
+        except:
+            messagebox('Failed to save the configuration, please enable the program to read, write, and create files.', 'err')
 
-    config["show.filesexplorer"] = value
+    def update_widgets_from_configuration_file(self):
+        if (self.settings['linenumbers.enabled']):
+            self.linenumbers.pack(expand=TRUE, fill=Y, padx=5, pady=5)
+        else:
+            self.linenumbers.pack_forget()
 
-    save_config(config)
+        self.linenumbers.justify = RIGHT if self.settings['linenumbers.justify'] == 'Right' else LEFT
+        self.linenumbers.redraw()
 
-def files_explorer_button_open_dir():
-    path = askdirectory(title='SparklyPython - Open directory')
+        self.editor_font = (self.settings['editor.font_name'], self.editor_font[1])
+        self.editor.config(font=self.editor_font)
 
-    if (path or len(path) > 0):
-        global main_dir
-        main_dir = path
+    def new_file(self):
+        def main():
+            self.current_file_path = ''
+            self.text_edited = False
 
-        for i in files_explorer_tree.get_children():
-            files_explorer_tree.delete(i)
+            self.editor.delete('1.0', END)
 
-        populate_files_explorer(files_explorer_tree, '', main_dir)
+            self.set_window_title_status(edited=False)
+            self.write_configuration_file(self.settings)
 
-def files_explorer_update(path=None):
-    if (path):
-        global main_dir
-        main_dir = path
+        if (self.text_edited):
+            res = tkinter_messagebox.askyesnocancel('SparklyPython - New File', 'Do you want to save the current file before creating a new file?')
 
-    for i in files_explorer_tree.get_children():
-        files_explorer_tree.delete(i)
+            if (res == True):
+                self.save_file()
 
-    populate_files_explorer(files_explorer_tree, '', main_dir)
+                main()
+            elif (res == False):
+                main()
+            else: return
+        else:
+            main()
 
-class IDE:
-    global gui
-    gui = Tk()
+    def save_file(self):
+        if (len(self.current_file_path) <= 0):
+            self.save_as_file()
+        else:
+            try:
+                with open(self.current_file_path, 'w') as file:
+                    text = self.editor.get('1.0', END).strip()
 
-    gui.geometry('1000x600')
-    gui.title('SparklyPython')
+                    file.write(text)
+                    file.close()
 
-    try:
-        gui.iconbitmap('icon.ico')
-    except:
-        gui.iconbitmap(None)
+                self.text_edited = False
 
-    # Menu bar
-    menu_bar = Menu(gui)
+                self.set_window_title_status(edited=False)
+            except:
+                self.save_as_file()
 
-    # Declaring any useful variables
-    global openrecent_variable, autosave_variable, files_explorer_view_var, line_numbers_view_var, img_folder, img_python_file, img_markdown_file, img_unknown_file
+    def save_as_file(self):
+        selected_path = filedialog.asksaveasfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Save as', defaultextension='py')
 
-    try:
-        img_folder = PhotoImage(file='./icons/folder.gif')
-        img_python_file = PhotoImage(file='./icons/file_python.gif')
-        img_markdown_file = PhotoImage(file='./icons/file_markdown.gif')
-        img_unknown_file = PhotoImage(file='./icons/file_unknown.gif')
-    except:
-        img_folder = ''
-        img_python_file = ''
-        img_markdown_file = ''
-        img_unknown_file = ''
+        if (len(selected_path) <= 0): return
 
-    openrecent_variable = BooleanVar()
-    autosave_variable = BooleanVar()
-    files_explorer_view_var = BooleanVar()
-    line_numbers_view_var = BooleanVar()
+        try:
+            with open(selected_path, 'w') as file:
+                text = self.editor.get('1.0', END).strip()
 
-    openrecent_variable.set(config['always.open.recent'])
-    autosave_variable.set(config['auto.save'])
-    files_explorer_view_var.set(config['show.filesexplorer'])
-    line_numbers_view_var.set(config['show.linenumbers'])
+                file.write(text)
+                file.close()
 
-    # Configuring main menu
-    file_menu = Menu(menu_bar, tearoff=0)
-    file_menu.add_command(label='New', command=new_file, accelerator='Ctrl+N')
-    file_menu.add_separator()
-    file_menu.add_command(label='Open File', command=open_file, accelerator='Ctrl+O')
-    file_menu.add_command(label='Open Folder', command=files_explorer_button_open_dir)
-    file_menu.add_separator()
-    file_menu.add_command(label='Save', command=save_file, accelerator='Ctrl+S')
-    file_menu.add_command(label='Save As...', command=save_as_file)
-    file_menu.add_separator()
-    file_menu.add_checkbutton(label='Auto Save', command=toggle_autosave, variable=autosave_variable)
-    file_menu.add_checkbutton(label='Open Recent', command=toggle_openrecent, variable=openrecent_variable)
-    file_menu.add_separator()
-    file_menu.add_command(label='Exit', command=exit_project, accelerator='Alt+F4')
+            self.current_file_path = selected_path
+            self.text_edited = False
 
-    menu_bar.add_cascade(label='File', menu=file_menu)
+            self.set_window_title_status(edited=False)
+            self.write_configuration_file(self.settings)
+        except:
+            messagebox('Unable to perform this action properly.', 'error')
 
-    edit_menu = Menu(menu_bar, tearoff=0)
-    edit_menu.add_command(label='Undo', command=lambda: editor_undo(), accelerator='Ctrl+Z')
-    edit_menu.add_command(label='Redo', command=lambda: editor_redo(), accelerator='Ctrl+Y')
-    edit_menu.add_separator()
-    edit_menu.add_command(label='Search Keyword', command=lambda: editor_search(), accelerator='Ctrl+F')
-    edit_menu.add_command(label='Formatter', command=lambda: formatter())
-    edit_menu.add_separator()
-    edit_menu.add_command(label='Copy', command=lambda: editor.event_generate("<<Copy>>"), accelerator='Ctrl+C')
-    edit_menu.add_command(label='Cut', command=lambda: editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
-    edit_menu.add_command(label='Paste', command=lambda: editor.event_generate("<<Paste>>"), accelerator='Ctrl+V')
+    def open_file(self):
+        if (self.text_edited):
+            response = tkinter_messagebox.askyesno('SparklyPython - Open File', 'Do you want to save the current file before opening another one?')
 
-    menu_bar.add_cascade(label='Edit', menu=edit_menu)
+            if (response): self.save_file()
 
-    view_menu = Menu(menu_bar, tearoff=0)
+        try:
+            selected_path = filedialog.askopenfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Open File')
 
-    view_menu.add_checkbutton(label='Files Explorer', command=lambda: toggle_files_explorer_view(), variable=files_explorer_view_var)
-    view_menu.add_checkbutton(label='Line Numbers', command=lambda: toggle_line_numbers_view(), variable=line_numbers_view_var)
+            if (len(selected_path) <= 0): return
 
-    menu_bar.add_cascade(label='View', menu=view_menu)
+            with open(selected_path, 'r') as file:
+                text = file.read().strip()
 
-    python_menu = Menu(menu_bar, tearoff=0)
-    python_menu.add_command(label='New Python Prompt', command=open_command_prompt)
-    python_menu.add_command(label='Run', command=run_project, accelerator='F5')
-    python_menu.add_separator()
-    python_menu.add_command(label='Install Packages', command=install_libraries, accelerator='Ctrl+L')
-    python_menu.add_command(label='Settings', command=show_settings, accelerator='F8')
+                self.editor.delete('1.0', END)
+                self.editor.insert('1.0', text)
+            
+                file.close()
 
-    menu_bar.add_cascade(label='Python', menu=python_menu)
+            self.current_file_path = selected_path
+            self.settings['recent_file_path'] = selected_path
 
-    help_menu = Menu(menu_bar, tearoff=0)
-    help_menu.add_command(label='About', command=lambda: show_about())
-    help_menu.add_command(label='Source (GitHub)', command=lambda: webbrowser.open('https://github.com/TFAGaming/SparklyPython'))
+            self.text_edited = False
 
-    menu_bar.add_cascade(label='Help', menu=help_menu)
+            self.set_window_title_status(edited=False)
 
-    gui.config(menu=menu_bar)
+            self.highlight_python_source()
+            self.linenumbers.redraw()
 
-    # Main frame
-    main_frame = Frame(gui)
-    main_frame.pack(expand=True, fill=BOTH)
+            self.write_configuration_file(self.settings)
+        except:
+            messagebox('Unable to perform this action properly.', 'error')
 
-    # Scroll bar
-    global scrollbar_yview, scrollbar_xview
-    scrollbar_yview = Scrollbar(main_frame, orient=VERTICAL)
-    scrollbar_yview.pack(side=RIGHT, fill=Y)
+    def highlight_python_source(self):
+        try:
+            self.editor.tag_delete('highlight_search_keyword')
 
-    scrollbar_xview = Scrollbar(main_frame, orient=HORIZONTAL)
-    scrollbar_xview.pack(side=BOTTOM, fill=X)
+            cdg = ic.ColorDelegator()
 
-    # Tree view (Files Explorer)
-    global files_explorer_frame, files_explorer_tree, files_explorer_ask_dir_btn
-    files_explorer_frame = Frame(main_frame)
-    if (config["show.filesexplorer"]): files_explorer_frame.pack(side=LEFT, fill=BOTH, padx=5, pady=5)
+            #cdg.prog = re.compile(r'\b(?P<Group>okbruh)\b|' + ic.make_pat().pattern, re.S)
+            cdg.prog = re.compile(r'\b(?P<GroupForNumbers>\d+)\b|' + ic.make_pat().pattern, re.S)
 
-    files_explorer_btns_frame = Frame(files_explorer_frame)
-    files_explorer_btns_frame.pack(side=TOP)
+            cdg.idprog = re.compile(r'\s+(\w+|\d+)', re.S)
 
-    Button(files_explorer_btns_frame, text='Open Folder', width=12, command=files_explorer_button_open_dir).pack(side=LEFT, padx=5, pady=5)
-    Button(files_explorer_btns_frame, text='Refresh', width=10, command=files_explorer_update).pack(side=RIGHT, padx=5, pady=5)
+            #cdg.tagdefs['Group'] = {'foreground': 'color', 'background': None}
+            cdg.tagdefs['GroupForNumbers'] = {'foreground': self.settings['highlighter.number'], 'background': None}
 
-    files_explorer_tree = ttk.Treeview(files_explorer_frame)
-    files_explorer_tree.heading('#0', text='Files Explorer')
+            cdg.tagdefs['COMMENT'] = {'foreground': self.settings['highlighter.comment'], 'background': None}
+            cdg.tagdefs['KEYWORD'] = {'foreground': self.settings['highlighter.keyword'], 'background': None}
+            cdg.tagdefs['BUILTIN'] = {'foreground': self.settings['highlighter.builtin'], 'background': None}
+            cdg.tagdefs['STRING'] = {'foreground': self.settings['highlighter.string'], 'background': None}
+            cdg.tagdefs['DEFINITION'] = {'foreground': self.settings['highlighter.def'], 'background': None}
 
-    files_explorer_tree.bind("<<TreeviewSelect>>", files_explorer_on_select)
-
-    files_explorer_tree.pack(side=LEFT, fill=BOTH)
-
-    # Editor and line numbers
-    global editor, linenums
-    editor = Text(main_frame, undo=True, yscrollcommand=scrollbar_yview.set, xscrollcommand=scrollbar_xview.set, wrap=NONE)
-    editor.pack(padx=5, pady=5, fill=BOTH, side=RIGHT, expand=True)
-
-    linenums = TkLineNumbers(main_frame, editor, justify=RIGHT)
-    if (config['show.linenumbers']): linenums.pack(fill=Y, side=RIGHT, padx=5, pady=5)
-
-    global editor_commands
-    editor_commands = Menu(gui, tearoff=0)
-    editor_commands.add_command(label='Undo', command=editor_undo, accelerator='Ctrl+Z')
-    editor_commands.add_command(label='Redo', command=editor_redo, accelerator='Ctrl+Y')
-    editor_commands.add_separator()
-    editor_commands.add_command(label='Copy', command=lambda: editor.event_generate("<<Copy>>"), accelerator='Ctrl+C')
-    editor_commands.add_command(label='Cut', command=lambda: editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
-    editor_commands.add_command(label='Paste', command=lambda: editor.event_generate("<<Paste>>"), accelerator='Ctrl+V')
-    editor_commands.add_separator()
-    editor_commands.add_command(label='Search Keyword', command=lambda: editor_search(), accelerator='CTRL+F')
-    editor_commands.add_command(label='Run', command=lambda: run_project(), accelerator='F5')
-    editor_commands.add_command(label='Formatter', command=lambda: formatter())
-    editor_commands.add_command(label='Variables', command=lambda: extract_variables_functions_classes())
-    editor_commands.add_separator()
-    editor_commands.add_command(label='Select All', command=lambda: editor.event_generate("<<SelectAll>>"))
-    editor_commands.add_command(label='Delete', command=lambda: editor.event_generate("<<Clear>>"), accelerator='Del')
-
-    # Configuring scroll bar
-    scrollbar_yview.config(command=scroll_both_y)
-    scrollbar_xview.config(command=scroll_both_x)
-    editor.config(yscrollcommand=update_scroll_y, xscrollcommand=update_scroll_x)
+            ip.Percolator(self.editor).insertfilter(cdg)
+        except: pass
     
-    # Seperator
-    separator = ttk.Separator(gui, orient=HORIZONTAL)
-    separator.pack(fill=X)
+    def open_settings(self):
+        settings = [
+            (
+                'Window', [
+                    ('Configure the main SparklyPython\'s built-in systems.\nNote: Changes of this specific page requires a reboot of the app.'),
+                    ('Check updates on startup', 'Checkbutton', self.settings['window.update_check'], 'window.update_check')
+                ]
+            ),
+            (
+                'Text Editor', [
+                    ('Customize the Text Editor; You can download fonts via https://fonts.google.com/ and use them here, the recommended font is \'Courier New\'. Also, you can set Indent spaces or TABs for your Python codes.'),
+                    ('Font name', 'Entry', self.settings['editor.font_name'], 'editor.font_name'),
+                    ('Python Indentation', 'Dropdown', ['TAB', 1, 2, 3, 4, 5, 6, 7, 8], self.settings['editor.indentation'], 'editor.indentation'),
+                    ('Add Python Indentation on a new line', 'Checkbutton', self.settings['editor.indentation_on_line'], 'editor.indentation_on_line'),
+                    ('Open recent file on startup', 'Checkbutton', self.settings['editor.open_recent_file'], 'editor.open_recent_file')
+                ]
+            ),
+            (
+                'Highlighter', [
+                    ('Change and customize Highlighting colors for Python!\nNote: Changes of this specific page requires a reboot of the app.'),
+                    ('Comment color', 'Color', self.settings['highlighter.comment'], 'highlighter.comment'),
+                    ('Keyword color', 'Color', self.settings['highlighter.keyword'], 'highlighter.keyword'),
+                    ('Built-in color', 'Color', self.settings['highlighter.builtin'], 'highlighter.builtin'),
+                    ('String color', 'Color', self.settings['highlighter.string'], 'highlighter.string'),
+                    ('Definition color', 'Color', self.settings['highlighter.def'], 'highlighter.def'),
+                    ('Number color', 'Color', self.settings['highlighter.number'], 'highlighter.number')
+                ]
+            ),
+            (
+                'Terminal', [
+                    ('Configure SparklyPython\'s Terminal system.\nThe Terminal feature is only available for the platform Microsoft Windows, using any other platforms will not run your Python codes.'),
+                    ('Default Python command', 'Entry', self.settings['terminal.python_command'], 'terminal.python_command'),
+                    ('Pause before exiting the command prompt', 'Checkbutton', self.settings['terminal.pause'], 'terminal.pause'),
+                    ('Save edited file before opening Terminal', 'Checkbutton', self.settings['terminal.save_file'], 'terminal.save_file')
+                ]
+            ),
+            (
+                'Line Numbers', [
+                    ('Configure Text Editor\'s Line Numbers. This plugin is a very helpful to track any errors, based on the error\'s line number.'),
+                    ('Enable Line Numbers', 'Checkbutton', self.settings['linenumbers.enabled'], 'linenumbers.enabled'),
+                    ('Justify numbers', 'Dropdown', ['Left', 'Right'], self.settings['linenumbers.justify'], 'linenumbers.justify')
+                ]
+            ),
+            (
+                'Autocomplete', [
+                    ('Configure Text Editor\'s Autocomplete. This plugin allows you to type any Python keyword very fastly, and has every keyword to use. The Autocomplete feature is like Microsoft Visual Studio Code\'s Intellisense.'),
+                    ('Enable Autocomplete', 'Checkbutton', self.settings['autocomplete.enabled'], 'autocomplete.enabled'),
+                    ('Match case each keyword', 'Checkbutton', self.settings['autocomplete.matchcase'], 'autocomplete.matchcase')
+                ]
+            )
+        ]
+        
+        def on_ok(root:Toplevel, results:list):
+            global thread
 
-    # Status frame
-    status_frame = Frame(gui)
-    status_frame.pack(fill=X, pady=5)
+            def main():
+                self.loading = SparklyPythonLoadingTopLevel(len(results))
 
-    # Status bar
-    global status_bar, status_run_btn
-    status_run_btn = Button(status_frame, text='Run', width=10, command=run_project)
-    status_run_btn.pack(side=LEFT, padx=10)
+                for result in results:
+                    variable = result[0]
+                    key = result[1]
 
-    status_seperator = ttk.Separator(status_frame, orient=VERTICAL)
-    status_seperator.pack(side=LEFT, fill=Y)
+                    if (key in self.settings):
+                        self.settings[key] = variable.get()
 
-    status_bar = Label(status_frame, text='Ready!', anchor=E)
-    status_bar.pack(fill=X, side=LEFT, ipady=3, padx=10)
+                        self.loading.add_step()
 
-    # Bindings
-    def return_key(event):
-        if event.keysym == 'Return':
-            editor.after(1, lambda: editor.see(END))
+                self.write_configuration_file(self.settings)
+                self.update_widgets_from_configuration_file()
+                root.destroy()
 
-    editor.bind('<Key>', lambda _: user_typed_event())
-    editor.bind('<Button-3>', show_editor_commands)
-    editor.bind('<Control-Key-s>', lambda _: save_file())
-    editor.bind('<Control-Key-o>', lambda _: open_file())
-    editor.bind('<Control-Key-n>', lambda _: new_file())
-    editor.bind('<Control-Key-f>', lambda _: editor_search())
-    editor.bind('<Return>', lambda _: new_line())
+                self.loading.destroy()
+                self.loading = None
 
-    gui.bind('<Alt-F4>', lambda _: exit_project())
-    gui.bind('<Control-Key-l>', lambda _: install_libraries())
-    gui.bind('<F8>', lambda _: show_settings())
-    gui.bind('<F5>', lambda _: run_project())
+                messagebox('Successfully updated the configuration file.', 'info')
 
-    gui.protocol('WM_DELETE_WINDOW', exit_project)
+                thread.stop()
+            
+            thread = StoppableThread(target=main)
+            thread.start()
 
-    # Open recent file
-    recent_filepath = config['recent.file.path']
+        SparklyPythonNotebookWindow(master=self, title='SparklyPython - Settings', geometry='500x400', settings=settings, on_ok=on_ok)
 
-    if (recent_filepath and config['always.open.recent']):
-        open_file(recent_filepath)
+    def open_about(self):
+        settings = [
+            (
+                f'SparklyPython ({__version__})', [
+                    (f'The most powerful, beginner-friendly, and open-source Python IDE.'),
+                    (f'Tk version: {TkVersion}\nPython version: {platform.python_version()}\nAutocomplete version: {self.autocomplete.__version__}'),
+                    (f'OS: {platform.system()} {platform.release()} {platform.win32_edition()}\nArchitecture: {platform.machine()}')
+                ]
+            )
+        ]
 
-    if (config['update.check']): check_latest_release_from_github()
+        def on_ok(root:Toplevel, _):
+            root.destroy()
 
-    gui.mainloop()
+        SparklyPythonNotebookWindow(master=self, title='SparklyPython - About', geometry='300x300', settings=settings, on_ok=on_ok)
 
-IDE()
+    def editor_undo(self):
+        try:
+            self.editor.edit_undo()
+        except: pass
+
+    def editor_redo(self):
+        try:
+            self.editor.edit_redo()
+        except: pass
+
+    def editor_zoom_in(self):
+        if (self.editor_font[1] >= 24): return
+
+        old_value = self.editor_font[1]
+        self.editor_font = (self.editor_font[0], old_value + 1)
+
+        self.editor.config(font=self.editor_font)
+    
+    def editor_zoom_out(self):
+        if (self.editor_font[1] <= 1): return
+
+        old_value = self.editor_font[1]
+        self.editor_font = (self.editor_font[0], old_value - 1)
+
+        self.editor.config(font=self.editor_font)
+
+    def editor_key_pressed(self):
+        self.editor_update_line_info()
+
+        self.text_edited = True
+
+        self.set_window_title_status(edited=True)
+
+        self.highlight_python_source()
+        self.linenumbers.redraw()
+
+    def editor_new_line(self):
+        self.editor_update_line_info()
+        self.linenumbers.redraw()
+
+        if (not self.settings['editor.indentation_on_line']): return
+
+        configured_indentation = self.settings['editor.indentation']
+
+        global indentation
+        indentation = '\t'
+        
+        if (configured_indentation != 'TAB' and configured_indentation.isdigit()):
+            indentation = ' ' * int(configured_indentation)
+
+        cursor_pos = self.editor.index(INSERT)
+        current_line = self.editor.get(cursor_pos.split('.')[0] + '.0', cursor_pos)
+
+        if current_line.strip().endswith(':'):
+            if (indentation in current_line):
+                tabs_count = current_line.count(indentation)
+                self.editor.insert(INSERT, '\n' + indentation * (tabs_count + 1))
+            else:
+                self.editor.insert(INSERT, f'\n{indentation}')
+        else:
+            cursor_pos = self.editor.index(INSERT)
+            current_line = self.editor.get(cursor_pos.split('.')[0] + '.0', cursor_pos)
+
+            if indentation in current_line:
+                tabs_count = current_line.count(indentation)
+                self.editor.insert(INSERT, '\n' + indentation * (tabs_count))
+            else:
+                self.editor.insert(INSERT, '\n')
+
+        return 'break'
+    
+    def editor_format_indentation(self):
+        if (self.settings['editor.indentation'] != 'TAB'):
+            res = tkinter_messagebox.askokcancel('SparklyPython - Formatter', 'This method will replace any configured indentation to TABs, are you sure about that?')
+
+            if (not res or res == None): return
+
+            text = self.editor.get('1.0', END)
+
+            text = text.replace(' ' * int(self.settings['editor.indentation']), '\t')
+
+            self.editor.delete('1.0', END)
+            self.editor.insert('1.0', text)
+
+    def editor_show_rightclick_commands(self, event):
+        editor_commands = Menu(self, tearoff=0)
+        editor_commands.add_command(label='Undo', command=self.editor_undo, accelerator='Ctrl+Z')
+        editor_commands.add_command(label='Redo', command=self.editor_redo, accelerator='Ctrl+Y')
+        editor_commands.add_separator()
+        editor_commands.add_command(label='Copy', command=lambda: self.editor.event_generate("<<Copy>>"), accelerator='Ctrl+C')
+        editor_commands.add_command(label='Cut', command=lambda: self.editor.event_generate("<<Cut>>"), accelerator='Ctrl+X')
+        editor_commands.add_command(label='Paste', command=lambda: self.editor.event_generate("<<Paste>>"), accelerator='Ctrl+V')
+        editor_commands.add_separator()
+        editor_commands.add_command(label='Search Keyword', command=self.editor_search_keyword, accelerator='CTRL+F')
+        editor_commands.add_command(label='Run', command=self.python_run, accelerator='F5')
+        editor_commands.add_command(label='Format Indentation', command=self.editor_format_indentation)
+        editor_commands.add_separator()
+        editor_commands.add_command(label='Select All', command=lambda: self.editor.event_generate("<<SelectAll>>"))
+        editor_commands.add_command(label='Delete', command=lambda: self.editor.event_generate("<<Clear>>"), accelerator='Del')
+
+        editor_commands.tk_popup(event.x_root, event.y_root)
+
+    def editor_update_line_info(self):
+        def main():
+            index = self.editor.index(CURRENT)
+
+            row, column = map(int, index.split('.'))
+
+            line_content = self.editor.get(f'{row}.0', f'{row + 1}.0')
+
+            self.line_info_text.config(text=f'Ln {row}, Col {column + 1}, Char {len(line_content)}')
+
+        self.after(10, main)
+
+    def scroll_both_y(self, action, position, type=None):
+        self.editor.yview_moveto(position)
+
+    def scroll_both_x(self, action, position, type=None):
+        self.editor.xview_moveto(position)
+
+    def update_scroll_y(self, first, last, type=None):
+        self.editor.yview_moveto(first)
+        self.editor_scrollbar_yview.set(first, last)
+        self.linenumbers.redraw()
+
+    def update_scroll_x(self, first, last, type=None):
+        self.editor.xview_moveto(first)
+        self.editor_scrollbar_xview.set(first, last)
+        self.linenumbers.redraw()
+
+    def editor_search_keyword(self):
+        settings = [
+            (
+                'Search Keyword', [
+                    ('Keyword to search', 'Entry', '', ''),
+                    ('Match case', 'Checkbutton', False, ''),
+                    ('Match whole keyword', 'Checkbutton', False, ''),
+                    ('Use RegExp (Regular Expression)', 'Checkbutton', False, '')
+                ]
+            )
+        ]
+
+        def on_ok(root, results):
+            arr = []
+
+            for result in results:
+                arr.append(result[0].get())
+
+            self.editor.tag_delete('highlight_search_keyword')
+
+            self.editor.tag_configure('highlight_search_keyword', foreground=None, background='#00FFFF')
+
+            start_pos = '1.0'
+
+            while True:
+                start_pos = self.editor.search(arr[0], start_pos, stopindex=END, nocase=not arr[1], exact=arr[2], regexp=arr[3])
+
+                if not start_pos: break
+
+                end_pos = f"{start_pos}+{len(arr[0])}c"
+                self.editor.tag_add('highlight_search_keyword', start_pos, end_pos)
+                start_pos = end_pos
+
+        SparklyPythonNotebookWindow(master=self, title='SparklyPython - Search Keyword', settings=settings, on_ok=on_ok)
+
+    def python_run(self):
+        if (self.settings['terminal.save_file']): self.save_file()
+
+        if (len(self.current_file_path) <= 0): return
+
+        def func(system: str):
+            python_command = 'python' if not 'terminal.python_command' in self.settings else self.settings['terminal.python_command']
+            pause_and_exit = '&& (pause && exit) || (pause && exit)' if 'terminal.pause' in self.settings and self.settings['terminal.pause'] == True else '&& (exit) || (exit)'
+
+            if (system.lower() == 'windows'):
+                return f'start cmd /k "{python_command} "{self.current_file_path}" {pause_and_exit}"'
+            else:
+                messagebox(f'The following command cannot be runned for the platform \'{system}\', please use Microsoft Windows instead.', 'error')
+                return None
+
+        system = platform.system()
+        command = func(system)
+
+        if (command == None): return
+
+        self.python_process = subprocess.Popen(command, shell=True)
+
+    def python_stop(self):
+        if (self.python_process):
+            try:
+                self.python_process.terminate()
+            except:
+                messagebox('Unable to kill the Python process.', 'error')
+        else:
+            messagebox('The Python process isn\'t running now.', 'info')
+
+    def python_new_prompt(self):
+        def func(system: str):
+            python_command = 'python' if not 'terminal.python_command' in self.settings else self.settings['terminal.python_command']
+            pause_and_exit = '&& (pause && exit) || (pause && exit)' if 'terminal.pause' in self.settings and self.settings['terminal.pause'] == True else '&& (exit) || (exit)'
+        
+            if (system.lower() == 'windows'):
+                return f'start cmd /k "{python_command} {pause_and_exit}"'
+            else:
+                messagebox(f'The following command cannot be runned for the platform \'{system}\', please use Microsoft Windows instead.', 'error')
+                return None
+
+        system = platform.system()
+        command = func(system)
+
+        if (command == None): return
+
+        subprocess.Popen(command, shell=True)
+
+    def file_size_format(self):
+        def sizeof(num, suffix='b'):
+            for unit in ('', 'K', 'M', 'G', 'T', 'P', 'E', 'Z'):
+                if abs(num) < 1024.0:
+                    return f"{num:3.1f}{unit}{suffix}"
+                num /= 1024.0
+
+            return f"{num:.1f}Y{suffix}"
+
+        return sizeof(os.path.getsize(self.current_file_path)) if len(self.current_file_path) > 0 else '0Kb'
+
+    def exit_program(self):
+        if (self.text_edited):
+            res = tkinter_messagebox.askyesnocancel('SparklyPython - End Program', 'Do you want to save the current file before closing the program?')
+
+            if (res == True):
+                self.save_file()
+
+                self.destroy()
+            elif (res == False):
+                self.destroy()
+            else:
+                return
+        else:
+            self.destroy()
+
+    def check_updates(self):
+        global thread
+
+        try:
+            def main():
+                try:
+                    response = requests.get('https://api.github.com/repos/TFAGaming/SparklyPython/releases')
+                    response.raise_for_status()
+                    github_info = response.json()
+
+                    if (len(github_info) > 0):
+                        latest = github_info[0]['tag_name']
+
+                        if (latest != __version__):
+                            res = tkinter_messagebox.askyesno('SparklyPython - Update', 'The version that you are currently is not the latest version of SparklyPython, do you want to see the latest release?')
+
+                            if (res):
+                                webbrowser.open('https://github.com/TFAGaming/SparklyPython/releases/tag/' + latest)
+                except:
+                    pass
+                
+                thread.stop()
+
+            thread = StoppableThread(target=main)
+            thread.start()
+        except:
+            pass
+
+    def set_window_title_status(self, file_path=None, edited=None):
+        if (len(self.current_file_path) <= 0):
+            self.title('SparklyPython - Untitled' + ('*' if edited else '') + ' (' + (self.file_size_format()) + ')')
+        else:
+            self.title('SparklyPython - ' + (os.path.basename(file_path) if file_path else os.path.basename(self.current_file_path)) + ('*' if edited else '') + ' (' + (self.file_size_format()) + ')')
+    
+app = SparklyPythonIDE()
+app.mainloop()

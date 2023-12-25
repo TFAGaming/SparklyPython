@@ -3,3 +3,5 @@ build
 dist
 main.spec
 old-icon.ico
+testing.py
+old-main.py
