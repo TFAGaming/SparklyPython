@@ -13,9 +13,11 @@ import json
 import subprocess
 import platform
 import os
+import difflib
+import ast
 import keyword, builtins, pkg_resources
 
-__version__ = 'v1.4.0-beta-1'
+__version__ = 'v1.4.0-beta-2'
 
 def messagebox(content: str, type: str, title=None):
     if (type == 'info'):
@@ -26,6 +28,17 @@ def messagebox(content: str, type: str, title=None):
         tkinter_messagebox.showwarning(title or 'SparklyPython - Warning', content)
     else:
         pass
+    
+def find_best_matching_keys(string, array, threshold=0.5):
+    similar_keys = []
+    for key in array:
+        similarity_ratio = difflib.SequenceMatcher(None, string, key).ratio()
+        if similarity_ratio >= threshold:
+            similar_keys.append((key, similarity_ratio))
+        
+    similar_keys.sort(key=lambda x: x[1], reverse=True)
+        
+    return similar_keys
     
 def center(win:Toplevel|Tk):
     win.update_idletasks()
@@ -74,6 +87,8 @@ class SparklyPythonNotebookWindow:
 
         cancel_button = Button(buttons_frame, width=10, text='Cancel', command=self.root.destroy)
         cancel_button.pack(side=LEFT, padx=5)
+
+        center(self.root)
 
     def split_notebooks(self, settings):
         for setting in settings:
@@ -214,8 +229,6 @@ class SparklyPythonLoadingTopLevel():
 
         self.step = 0
 
-        center(self.toplvl)
-
         self.toplvl.title('Loading...')
         self.toplvl.geometry('250x50')
         self.toplvl.resizable(0, 0)
@@ -235,6 +248,8 @@ class SparklyPythonLoadingTopLevel():
 
         self.progress_bar = ttk.Progressbar(self.toplvl, maximum=100, mode='determinate', value=0, variable=self.progress_bar_variable, length=250)
         self.progress_bar.pack(side=LEFT, fill=X, padx=5, pady=5)
+
+        center(self.toplvl)
 
     def set_values(self, total):
         self.total = total
@@ -263,10 +278,12 @@ class SparklyPythonLoadingTopLevel():
 class SparklyPythonAutocomplete():
     def __init__(self, master:Tk, text:Text, keywords:list[str]):
         self.text = text
+        self.default_keywords = keywords
         self.keywords = keywords
         self.master = master
+        self.extracted_variables = []
 
-        self.__version__ = '1.0.0-beta-1'
+        self.__version__ = '1.0.0-beta-2'
 
         self.listbox_frame = None
         self.listbox = None
@@ -274,15 +291,44 @@ class SparklyPythonAutocomplete():
 
         self.text.bind_all('<Key>', self.key_pressed)
 
+    def extract_variables(self):
+        try:
+            code = self.text.get('1.0', END)
+
+            parsed_code = ast.parse(code)
+    
+            result = []
+
+            for node in ast.walk(parsed_code):
+                if isinstance(node, ast.FunctionDef):
+                    result.append(node.name + ' (F)')
+                elif isinstance(node, ast.ClassDef):
+                    result.append(node.name + ' (C)')
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            result.append(target.id + ' (V)')
+                elif isinstance(node, ast.AnnAssign):
+                    if isinstance(node.target, ast.Name):
+                        result.append(node.target.id + ' (V)')
+
+            return result
+        except:
+            return []
+
     def show_popup(self, matching_keys):
         if not matching_keys:
             self.hide_popup()
             return
 
-        x, y, _, _ = self.text.bbox(INSERT)
+        cursor_index = self.text.index(INSERT)
+        zoom = self.master.editor_font[1]
 
-        x += 75 + (self.master.editor_font[1])
-        y += 20 + (self.master.editor_font[1])
+        x, y = self.text.bbox(cursor_index)[:2]
+        x += self.text.winfo_x()
+
+        x += self.master.linenumbers_frame.winfo_width() + self.master.explorer_frame.winfo_width()
+        y += zoom * 2
 
         if not self.listbox_frame:
             self.listbox_frame = Frame(self.master)
@@ -328,6 +374,15 @@ class SparklyPythonAutocomplete():
 
     def key_pressed(self, event):
         if ('autocomplete.enabled' in self.master.settings and not self.master.settings['autocomplete.enabled']): return
+        
+        self.keywords = self.default_keywords
+        variables = self.extract_variables()
+
+        if (len(variables) > 0):
+            self.extracted_variables = variables
+
+        self.keywords += self.extracted_variables
+        self.keywords = list(set(self.keywords)) # Removing duplicates
 
         self.master.after(10, self.get_current_text)
 
@@ -353,7 +408,17 @@ class SparklyPythonAutocomplete():
                 self.hide_popup()
                 return
 
-            matching_keys = [key for key in self.keywords if key.startswith(current_word)] if self.master.settings['autocomplete.matchcase'] else [key for key in self.keywords if key.lower().startswith(current_word.lower())]
+            if (self.master.settings['autocomplete.matchcase']):
+                matching_keys = [key for key in self.keywords if key.startswith(current_word)]
+            else:
+                matching_keys = []
+                best_match = find_best_matching_keys(current_word, self.keywords, threshold=0.3)
+            
+                for match in best_match:
+                    if (match[1] < 0.5): break
+                    
+                    matching_keys.append(match[0])
+
             self.show_popup(matching_keys)
 
     def on_listbox_select(self, event):
@@ -366,7 +431,10 @@ class SparklyPythonAutocomplete():
             indentation = ' ' * int(configured_indentation)
 
         if self.listbox:
-            selected_item = self.listbox.get(self.listbox.curselection())
+            selected_item: str = self.listbox.get(self.listbox.curselection())
+
+            if '(F)' in selected_item or '(C)' in selected_item or '(V)' in selected_item:
+                selected_item = selected_item.split(' ')[0]
 
             if selected_item:
                 current_text = self.text.get('insert linestart', INSERT)
@@ -414,6 +482,9 @@ class SparklyPythonAutocomplete():
 
         if self.listbox:
             selected_item = self.listbox.get(self.listbox.curselection())
+
+            if '(F)' in selected_item or '(C)' in selected_item or '(V)' in selected_item:
+                selected_item = selected_item.split(' ')[0]
 
             if selected_item:
                 current_text = self.text.get('insert linestart', INSERT)
@@ -475,6 +546,58 @@ class SparklyPythonAutocomplete():
                     self.listbox.select_set(0)
         
         return 'break'
+    
+class SparklyPythonExplorer():    
+    def __init__(self, treeview: ttk.Treeview, root: Tk):
+        self.treeview = treeview
+        self.root = root
+
+        try:
+            self.img_folder = PhotoImage(file='./icons/folder.gif')
+            self.img_python_file = PhotoImage(file='./icons/file_python.gif')
+        except:
+            self.img_folder = ''
+            self.img_python_file = ''
+
+        self.treeview.bind("<<TreeviewSelect>>", self.on_select)
+
+
+    def populate(self, parent: str, folder: str, path_so_far=''):
+        if (len(folder) <= 0): return
+
+        items = os.listdir(folder)
+
+        for item in items:
+            item_path = os.path.join(folder, item)
+            full_path = os.path.join(path_so_far, item)
+
+            if os.path.isdir(item_path):
+                folder_icon = self.treeview.insert(parent, 'end', text=f' {item}', open=False, values=(full_path, 'dir'))
+
+                self.populate(folder_icon, item_path, path_so_far=full_path)
+            else:
+                if (str(item).endswith('.py')): 
+                    self.treeview.insert(parent, 'end', text=f' {item}', values=(full_path, 'file'))
+                else:
+                    self.treeview.insert(parent, 'end', text=f' {item}', values=(full_path, 'file'))
+
+    def on_select(self, event):
+        selected_item = self.treeview.selection()
+
+        if (not selected_item): return
+
+        full_path: str = os.path.join(self.root.startup_explorer_dir, self.treeview.item(selected_item, 'values')[0]).replace('\\', '/')
+        typeof = self.treeview.item(selected_item, 'values')[1]
+
+        if (typeof == 'file'):
+            if (full_path.endswith('.py')):
+                self.root.open_file(custom_path=full_path)
+            else:
+                os.startfile(full_path)
+
+    def clear(self):
+        for item in self.treeview.get_children():
+            self.treeview.delete(item)
 
 class StoppableThread(Thread):
     def __init__(self,  *args, **kwargs):
@@ -496,10 +619,12 @@ class SparklyPythonIDE(Tk):
         except: pass
 
         self.current_file_path = ''
+        self.startup_explorer_dir = ''
         self.current_main_dir = ''
         self.text_edited = False
         self.settings = {
-            'recent_file_path': ''
+            'recent_file_path': '',
+            'startup_explorer_dir': ''
         }
         self.default_settings = [
             ('window.update_check', True),
@@ -515,17 +640,17 @@ class SparklyPythonIDE(Tk):
             self.settings[setting[0]] = setting[1]
 
         self.title('SparklyPython')
-        self.geometry('1200x600')
+        self.geometry('1200x700')
 
         self.check_configuration_file()
-
+        
         # Menu bar configuration
         self.menu_bar = Menu(self)
 
         file_menu = Menu(self.menu_bar, tearoff=0)
         file_menu.add_command(label='New', command=self.new_file, accelerator='Ctrl+N')
         file_menu.add_separator()
-        file_menu.add_command(label='Open File', command=self.open_file, accelerator='Ctrl+O')
+        file_menu.add_command(label='Open File', command=lambda: self.open_file(explorer=True), accelerator='Ctrl+O')
         file_menu.add_separator()
         file_menu.add_command(label='Save', command=self.save_file, accelerator='Ctrl+S')
         file_menu.add_command(label='Save As...', command=self.save_as_file)
@@ -574,6 +699,9 @@ class SparklyPythonIDE(Tk):
         self.editor_frame = Frame(self.main)
         self.editor_frame.pack(side=RIGHT, expand=TRUE, fill=BOTH)
 
+        self.explorer_frame = Frame(self.main)
+        self.explorer_frame.pack(side=LEFT, fill=Y)
+
         self.linenumbers_frame = Frame(self.main)
         self.linenumbers_frame.pack(side=LEFT, fill=Y)
 
@@ -621,7 +749,15 @@ class SparklyPythonIDE(Tk):
         self.linenumbers = TkLineNumbers(self.linenumbers_frame, textwidget=self.editor, justify=RIGHT if self.settings['linenumbers.justify'] == 'Right' else LEFT)
 
         if (self.settings['linenumbers.enabled']): self.linenumbers.pack(expand=TRUE, fill=Y, padx=5, pady=5)
+
+        # Explorer
+        self.explorer = ttk.Treeview(self.explorer_frame)
+        self.explorer.heading('#0', text='Files Explorer')
+
+        self.explorer.pack(side=LEFT, fill=BOTH, padx=5, pady=5)
         
+        self.explorer_manager = SparklyPythonExplorer(self.explorer, self)
+
         # Configuring scroll bar
         self.editor_scrollbar_yview.config(command=self.scroll_both_y)
         self.editor_scrollbar_xview.config(command=self.scroll_both_x)
@@ -639,6 +775,7 @@ class SparklyPythonIDE(Tk):
                     file.close()
 
                 self.current_file_path = self.settings['recent_file_path']
+                self.startup_explorer_dir = self.settings['startup_explorer_dir']
 
                 self.set_window_title_status(edited=False)
 
@@ -656,7 +793,8 @@ class SparklyPythonIDE(Tk):
 
         SparklyPythonTooltip(status_frame_run_button, 'Starts a new Python prompt and runs the code.')
 
-        self.status_text = Label(self.status_frame, text='SparklyPython is ready.', justify=LEFT)
+        #self.status_text = Label(self.status_frame, text='SparklyPython is ready.', justify=LEFT)
+        self.status_text = Label(self.status_frame, text='', justify=LEFT)
         self.status_text.pack(side=LEFT, padx=10)
 
         Label(self.status_frame, text='Version: ' + __version__, justify=RIGHT).pack(side=RIGHT, padx=10)
@@ -665,6 +803,17 @@ class SparklyPythonIDE(Tk):
         self.line_info_text = Label(self.status_frame, text='Ln 0, Col 0, Char 0', justify=RIGHT)
         self.line_info_text.pack(side=RIGHT, padx=10)
         ttk.Separator(self.status_frame, orient=VERTICAL).pack(side=RIGHT, fill=Y, padx=10)
+
+        center(self)
+
+        global explorer_thread
+
+        def explorer_main():
+            self.explorer_manager.populate('', self.startup_explorer_dir)
+            explorer_thread.stop()
+        
+        explorer_thread = StoppableThread(target=explorer_main)
+        explorer_thread.start()
 
         if (self.settings['window.update_check']):
             self.check_updates()
@@ -714,7 +863,7 @@ class SparklyPythonIDE(Tk):
         if (self.settings['linenumbers.enabled']):
             self.linenumbers.pack(expand=TRUE, fill=Y, padx=5, pady=5)
         else:
-            self.linenumbers.pack_forget()
+            messagebox('You must restart SparklyPython to apply these changes.', 'warning')
 
         self.linenumbers.justify = RIGHT if self.settings['linenumbers.justify'] == 'Right' else LEFT
         self.linenumbers.redraw()
@@ -782,14 +931,14 @@ class SparklyPythonIDE(Tk):
         except:
             messagebox('Unable to perform this action properly.', 'error')
 
-    def open_file(self):
+    def open_file(self, custom_path=None, explorer=False):
         if (self.text_edited):
             response = tkinter_messagebox.askyesno('SparklyPython - Open File', 'Do you want to save the current file before opening another one?')
 
             if (response): self.save_file()
 
         try:
-            selected_path = filedialog.askopenfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Open File')
+            selected_path = custom_path if custom_path else filedialog.askopenfilename(filetypes=[('Python', '*py')], title=f'SparklyPython - Open File')
 
             if (len(selected_path) <= 0): return
 
@@ -803,6 +952,21 @@ class SparklyPythonIDE(Tk):
 
             self.current_file_path = selected_path
             self.settings['recent_file_path'] = selected_path
+
+            if (explorer):
+                self.startup_explorer_dir = os.path.dirname(self.current_file_path)
+                self.settings['startup_explorer_dir'] = self.startup_explorer_dir
+
+                self.explorer_manager.clear()
+
+                global explorer_thread
+
+                def explorer_main():
+                    self.explorer_manager.populate('', self.startup_explorer_dir)
+                    explorer_thread.stop()
+        
+                explorer_thread = StoppableThread(target=explorer_main)
+                explorer_thread.start()
 
             self.text_edited = False
 
@@ -1091,6 +1255,10 @@ class SparklyPythonIDE(Tk):
 
             start_pos = '1.0'
 
+            if (len(arr[0]) <= 0 or arr[0] == ''):
+                messagebox('You cannot search nothing.', 'warning')
+                return
+
             while True:
                 start_pos = self.editor.search(arr[0], start_pos, stopindex=END, nocase=not arr[1], exact=arr[2], regexp=arr[3])
 
@@ -1191,7 +1359,7 @@ class SparklyPythonIDE(Tk):
                         latest = github_info[0]['tag_name']
 
                         if (latest != __version__):
-                            res = tkinter_messagebox.askyesno('SparklyPython - Update', 'The version that you are currently is not the latest version of SparklyPython, do you want to see the latest release?')
+                            res = tkinter_messagebox.askyesno('SparklyPython - Update', 'The version that you are currently using is not the latest version of SparklyPython, do you want to see the latest release?')
 
                             if (res):
                                 webbrowser.open('https://github.com/TFAGaming/SparklyPython/releases/tag/' + latest)
