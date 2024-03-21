@@ -20,7 +20,7 @@ import ast
 import importlib.util as importlib_util
 import keyword, builtins, pkg_resources
 
-__version__ = 'v1.4.0-beta-3'
+__version__ = 'v1.4.0'
 
 def messagebox(content: str, type: str, title=None):
     if (type == 'info'):
